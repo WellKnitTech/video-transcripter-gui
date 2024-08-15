@@ -9,8 +9,7 @@ import logging
 import time
 import threading
 import hashlib
-import shutil
-import tempfile
+from urllib.parse import urlparse
 from datetime import datetime
 
 # Setup logging
@@ -69,7 +68,7 @@ def download_video(url, output_dir='downloads', progress_callback=None):
         logging.error(f"Failed to download video: {e}")
         raise
 
-def generate_transcript(video_file, save_text=False, url=None):
+def generate_transcript(video_file, delay=0.0, save_text=False, url=None):
     """Generate transcription for the given video file and optionally save as ASS with metadata."""
     if not os.path.exists(video_file):
         logging.error(f"Video file does not exist: {video_file}")
@@ -99,10 +98,10 @@ def generate_transcript(video_file, save_text=False, url=None):
             f.write("\n[Events]\n")
             f.write("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
-            # Write each segment
+            # Write each segment with delay applied
             for segment in result['segments']:
-                start_time = segment['start']
-                end_time = segment['end']
+                start_time = max(segment['start'] + delay, 0)  # Ensure the start time isn't negative
+                end_time = max(segment['end'] + delay, 0)
                 text = segment['text']
                 start_ass_time = convert_to_ass_time(start_time)
                 end_ass_time = convert_to_ass_time(end_time)
@@ -186,9 +185,19 @@ def embed_subtitles(video_file, subtitle_file):
         logging.error(f"FFmpeg error: {str(e)}")
         return None
 
+def is_url(input_string):
+    """Check if the input string is a valid URL."""
+    try:
+        result = urlparse(input_string)
+        return all([result.scheme, result.netloc])
+    except ValueError:
+        return False
+
 def process_video():
-    """Process video from URL for downloading, transcribing, and embedding subtitles."""
-    url = url_entry.get()
+    """Process video from URL or local file for downloading, transcribing, and embedding subtitles."""
+    input_path = url_entry.get()
+    delay = float(delay_entry.get())
+    embed_subs = embed_subs_var.get()
 
     home_dir = os.path.expanduser("~")
     default_output_dir = os.path.join(home_dir, "Downloads")
@@ -196,25 +205,61 @@ def process_video():
     output_dir = filedialog.askdirectory(title="Select Download Directory", initialdir=default_output_dir)
     save_text = save_text_var.get()
 
-    if not url or not output_dir:
-        messagebox.showwarning("Input Error", "Please provide a valid URL and download directory.")
+    if not input_path or not output_dir:
+        messagebox.showwarning("Input Error", "Please provide a valid video input and download directory.")
         return
 
-    threading.Thread(target=lambda: threaded_process(url, output_dir, save_text, url)).start()
+    if is_url(input_path):
+        # Process as URL
+        threading.Thread(target=lambda: threaded_process_url(input_path, output_dir, save_text, delay, embed_subs, input_path)).start()
+    else:
+        # Process as local or network file
+        threading.Thread(target=lambda: threaded_process_file(input_path, output_dir, save_text, delay, embed_subs)).start()
 
-def threaded_process(url, output_dir, save_text, source_url):
+def threaded_process_url(url, output_dir, save_text, delay, embed_subs, source_url):
     try:
         log_text.insert(tk.END, "Starting download...\n")
         video_file = download_video(url, output_dir, progress_callback=update_progress)
 
         log_text.insert(tk.END, "Transcribing video...\n")
-        subtitle_file, text_file = generate_transcript(video_file, save_text, source_url)
+        subtitle_file, text_file = generate_transcript(video_file, delay, save_text, source_url)
 
         if subtitle_file:
-            log_text.insert(tk.END, "Embedding subtitles...\n")
-            subtitled_video = embed_subtitles(video_file, subtitle_file)
+            if embed_subs:
+                log_text.insert(tk.END, "Embedding subtitles...\n")
+                subtitled_video = embed_subtitles(video_file, subtitle_file)
+                message = f"Subtitled video saved as: {subtitled_video}"
+            else:
+                message = f"Subtitle file generated: {subtitle_file}"
 
-            message = f"Subtitled video saved as: {subtitled_video}"
+            if text_file:
+                message += f"\nTranscription saved as: {text_file}"
+
+            log_text.insert(tk.END, "Processing completed.\n")
+            messagebox.showinfo("Success", message)
+        else:
+            log_text.insert(tk.END, "Failed to create subtitle file.\n")
+            messagebox.showerror("Error", "Failed to create subtitle file.")
+
+    except Exception as e:
+        log_text.insert(tk.END, f"Error: {str(e)}\n")
+        messagebox.showerror("Error", f"An error occurred: {str(e)}")
+
+def threaded_process_file(video_file, output_dir, save_text, delay, embed_subs):
+    try:
+        log_text.insert(tk.END, "Processing local video file...\n")
+
+        log_text.insert(tk.END, "Transcribing video...\n")
+        subtitle_file, text_file = generate_transcript(video_file, delay, save_text)
+
+        if subtitle_file:
+            if embed_subs:
+                log_text.insert(tk.END, "Embedding subtitles...\n")
+                subtitled_video = embed_subtitles(video_file, subtitle_file)
+                message = f"Subtitled video saved as: {subtitled_video}"
+            else:
+                message = f"Subtitle file generated: {subtitle_file}"
+
             if text_file:
                 message += f"\nTranscription saved as: {text_file}"
 
@@ -230,32 +275,43 @@ def threaded_process(url, output_dir, save_text, source_url):
 
 def setup_gui():
     """Setup the GUI components."""
-    global root, url_entry, save_text_var, progress_bar, log_text
+    global root, url_entry, delay_entry, save_text_var, embed_subs_var, progress_bar, log_text
     root = tk.Tk()
     root.title("Video Transcriber")
 
     frame = tk.Frame(root)
     frame.pack(pady=20, padx=20)
 
-    # URL Entry
-    tk.Label(frame, text="Video URL:").grid(row=0, column=0, padx=5, pady=5)
+    # URL/File Path Entry
+    tk.Label(frame, text="Video URL or File Path:").grid(row=0, column=0, padx=5, pady=5)
     url_entry = tk.Entry(frame, width=50)
     url_entry.grid(row=0, column=1, padx=5, pady=5)
 
+    # Subtitle Delay Entry
+    tk.Label(frame, text="Subtitle Delay (seconds):").grid(row=1, column=0, padx=5, pady=5)
+    delay_entry = tk.Entry(frame, width=10)
+    delay_entry.grid(row=1, column=1, padx=5, pady=5)
+    delay_entry.insert(0, "0.0")  # Default delay of 0 seconds
+
     # Save Text Checkbox
     save_text_var = tk.BooleanVar()
-    tk.Checkbutton(frame, text="Save transcription as a text file", variable=save_text_var).grid(row=1, columnspan=2, pady=10)
+    tk.Checkbutton(frame, text="Save transcription as a text file", variable=save_text_var).grid(row=2, columnspan=2, pady=10)
+
+    # Embed Subtitles Checkbox
+    embed_subs_var = tk.BooleanVar()
+    tk.Checkbutton(frame, text="Embed subtitles into video", variable=embed_subs_var).grid(row=3, columnspan=2, pady=10)
+    embed_subs_var.set(True)  # Default to embedding subtitles
 
     # Progress Bar
     progress_bar = Progressbar(frame, orient=tk.HORIZONTAL, length=300, mode='determinate')
-    progress_bar.grid(row=2, columnspan=2, pady=10)
+    progress_bar.grid(row=4, columnspan=2, pady=10)
 
-    # Download Button
-    tk.Button(frame, text="Download and Transcribe", command=process_video).grid(row=3, columnspan=2, pady=10)
+    # Process Video Button
+    tk.Button(frame, text="Process Video", command=process_video).grid(row=5, columnspan=2, pady=10)
 
     # Log Text Box
     log_text = scrolledtext.ScrolledText(frame, height=10, width=50)
-    log_text.grid(row=4, columnspan=2, pady=10)
+    log_text.grid(row=6, columnspan=2, pady=10)
 
     return root
 
