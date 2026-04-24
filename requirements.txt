@@ -1,9 +1,1 @@
-yt-dlp
-whisper
-ffmpeg-python
-tk
-numpy
-scipy
-librosa
-scikit-learn
-soundfile
+-e .

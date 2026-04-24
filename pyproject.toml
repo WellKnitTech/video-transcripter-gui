@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-transcriber-gui"
+version = "0.2.0"
+description = "Desktop GUI for downloading, transcribing, and subtitling video files"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Unlicense" }
+authors = [{ name = "Video Transcriber GUI contributors" }]
+dependencies = [
+  "ffmpeg-python>=0.2.0,<1.0.0",
+  "openai-whisper>=20231117",
+  "yt-dlp>=2024.8.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "pytest>=8.3.3",
+  "ruff>=0.7.0",
+]
+diarization = [
+  "librosa>=0.10.2.post1",
+  "numpy>=1.26.4",
+  "scikit-learn>=1.5.2",
+]
+
+[project.scripts]
+video-transcriber-gui = "video_transcriber.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101"]

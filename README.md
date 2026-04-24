@@ -1,72 +1,130 @@
 # Video Transcriber GUI
 
-## Overview
+Desktop app for downloading videos, generating subtitles with Whisper, optionally adding basic speaker diarization, and exporting transcript artifacts to a chosen output directory.
 
-The **Video Transcriber GUI** is a Python-based graphical user interface (GUI) tool designed to download, transcribe, and embed subtitles into video files. The tool leverages various powerful libraries like `yt-dlp`, `whisper`, and `ffmpeg` to accomplish its tasks, providing an intuitive interface for users to interact with these processes.
+## What Changed
 
-## Features
+This project has been reworked from a single-script prototype into a small package with:
 
-- **Download Videos:** Download videos from supported URLs using `yt-dlp`.
-- **Generate Transcripts:** Automatically transcribe downloaded or locally stored videos using OpenAI's Whisper model.
-- **Embed Subtitles:** Optionally embed generated subtitles directly into the video file.
-- **Save Forensic Metadata:** Save transcripts along with forensic metadata, such as SHA1 hash, source URL, and video length, ensuring the transcript's integrity.
-- **Customizable:** Users can adjust subtitle delay and choose whether to embed subtitles or save the transcription as a text file.
+- safer Tkinter threading via a worker queue and main-thread UI updates
+- best-effort job cancellation between major processing stages and during downloads
+- input validation for URLs, files, output directories, subtitle delay, and speaker counts
+- consistent output handling for both downloaded and local files
+- modular code under `src/video_transcriber/`
+- cached Whisper model loading per app session
+- selectable subtitle format (`ass`, `srt`, or `vtt`) and Whisper model size
+- an editable transcript panel for post-run transcript fixes and re-exporting
+- persisted recent settings
+- tests, linting, package metadata, and CI
 
-## Prerequisites
+## Project Layout
 
-Before running the application, ensure you have the following installed:
-
-- Python 3.x
-- Required Python packages (can be installed using `pip`):
-  - yt-dlp
-  - whisper
-  - ffmpeg-python
-  - tkinter
-
-You can install the necessary Python packages using:
-
-```bash
-pip install yt-dlp whisper ffmpeg-python tkinter
+```text
+src/video_transcriber/
+  gui.py            Tkinter app and event loop
+  pipeline.py       Download/transcribe/embed orchestration
+  transcription.py  Whisper integration
+  subtitles.py      ASS, SRT, and text transcript writers
+  diarization.py    Optional speaker diarization helpers
+  validation.py     User input validation
+  utils.py          Shared pure helpers and settings storage
+tests/              Unit tests for pure and orchestration helpers
 ```
 
-Additionally, ensure `ffmpeg` is installed on your system and accessible via the command line.
+## Requirements
 
-## How to Use
+- Python 3.10+
+- `ffmpeg` installed and available on your `PATH`
+- Tkinter available in your Python installation
 
-1. **Run the Application:**
-   - You can start the GUI by executing the script `video_transcriber_gui.py`.
+Tkinter is usually bundled by your OS Python package and is not installed from PyPI.
 
-   ```bash
-   python video_transcriber_gui.py
-   ```
+## Install
 
-2. **Provide Input:**
-   - Enter a video URL or select a local video file path.
-   - Set the subtitle delay if needed (default is `0.0` seconds).
-   - Choose whether to save the transcription as a text file.
-   - Decide if you want the subtitles embedded directly into the video.
+Create a virtual environment and install the project:
 
-3. **Select Output Directory:**
-   - Choose the directory where the video and transcription files will be saved.
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+```
 
-4. **Process the Video:**
-   - Click on "Process Video" to start downloading (if applicable), transcribing, and embedding subtitles.
+To enable speaker diarization support, install the optional extras:
 
-5. **Monitor Progress:**
-   - The progress of the download and transcription will be displayed in the progress bar and log section.
+```bash
+pip install -e .[diarization]
+```
 
-## Logging and Error Handling
+For development tools:
 
-The application logs all actions and errors to help you debug if anything goes wrong. Logs are printed directly to the GUI's log text box.
+```bash
+pip install -e .[dev]
+```
+
+## Run
+
+You can launch the GUI in either of these ways:
+
+```bash
+python video_transcriber_gui.py
+```
+
+or
+
+```bash
+video-transcriber-gui
+```
+
+## Using the App
+
+1. Choose an input mode: URL download or local file.
+2. Select the output directory.
+3. Choose the Whisper model size.
+4. Pick subtitle format (`ass`, `srt`, or `vtt`).
+5. Optionally enable speaker diarization, transcript text export, and subtitle embedding.
+6. Start processing, monitor the status log and progress bar, and cancel if needed.
+7. After the run completes, edit the timestamped transcript in the built-in editor and export revised text or subtitle files.
+
+Generated outputs can include:
+
+- subtitle file in the chosen format
+- text transcript with forensic metadata
+- embedded `.mp4` with burned-in subtitles
+- edited transcript exports from the transcript editor
+
+## Developer Commands
+
+With the virtual environment active:
+
+```bash
+pytest
+ruff check .
+```
+
+## CI
+
+GitHub Actions now runs:
+
+- `ruff` lint checks
+- `pytest`
+- Bandit security scans
+
+## Known Limitations
+
+- cancellation is best-effort and may finish the currently running model call before stopping
+- speaker diarization is still heuristic and best-effort
+- embedding depends on local `ffmpeg` capabilities
+- Whisper model downloads can be large on first run
+
+## Troubleshooting
+
+- `ffmpeg is not installed or is not on PATH`
+  - install `ffmpeg` with your package manager and confirm `ffmpeg -version` works
+- GUI starts but transcription fails immediately
+  - ensure the Whisper package is installed and the selected model can be downloaded
+- diarization fails
+  - install the optional diarization extras and try again without diarization to confirm the base pipeline works
 
 ## License
 
-This project is licensed under the Unlicense. See the LICENSE file for more details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a pull request or open an issue for any bugs or feature requests.
-
-## Disclaimer
-
-This tool is provided as-is without any guarantees. Use it at your own risk, especially when handling sensitive or large video files.
+This project is licensed under the Unlicense. See `LICENSE` for details.
