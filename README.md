@@ -39,6 +39,23 @@ tests/              Unit tests for pure and orchestration helpers
 
 Tkinter is usually bundled by your OS Python package and is not installed from PyPI.
 
+## Quick Start
+
+If you just want to run the new version locally:
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+python video_transcriber_gui.py
+```
+
+You can also launch it with the installed command after activation:
+
+```bash
+video-transcriber-gui
+```
+
 ## Install
 
 Create a virtual environment and install the project:
@@ -63,7 +80,7 @@ pip install -e .[dev]
 
 ## Run
 
-You can launch the GUI in either of these ways:
+After activating your virtual environment, you can launch the GUI in either of these ways:
 
 ```bash
 python video_transcriber_gui.py
