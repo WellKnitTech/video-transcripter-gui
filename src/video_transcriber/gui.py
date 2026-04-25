@@ -7,10 +7,13 @@ import queue
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Literal, cast
 
 from .exceptions import CancelledError, SettingsError, VideoTranscriberError
+from .gui_theme import PALETTE, PLACEHOLDER_TEXT
+from .gui_theme import configure_styles as configure_gui_styles
+from .gui_views import build_ui
 from .models import (
     AppSettings,
     CancellationToken,
@@ -31,33 +34,11 @@ from .utils import default_output_dir, load_settings, open_directory, save_setti
 from .validation import validate_job_config
 
 LOGGER = logging.getLogger(__name__)
-MODEL_OPTIONS = ["tiny", "base", "small", "medium", "large"]
-SUBTITLE_FORMAT_OPTIONS = ["ass", "srt", "vtt"]
 QUEUE_PROGRESS = "progress"
 QUEUE_RESULT = "result"
 QUEUE_ERROR = "error"
 QUEUE_EXPORT_RESULT = "export_result"
 QUEUE_EXPORT_ERROR = "export_error"
-PLACEHOLDER_TEXT = {
-    "url": "https://example.com/video",
-    "file": "/path/to/video.mp4",
-    "output": "/path/to/output-folder",
-}
-
-PALETTE = {
-    "bg": "#F5F0E7",
-    "surface": "#FCF8F2",
-    "surface_alt": "#EFE4D4",
-    "border": "#D7C5AE",
-    "accent": "#A56A43",
-    "accent_soft": "#E8D2BB",
-    "text": "#3A3128",
-    "muted": "#756656",
-    "success": "#5C7A5B",
-    "warning": "#B4784A",
-    "danger": "#A34A40",
-    "editor_bg": "#FFFDF8",
-}
 
 QueuePayload = tuple[str, str, float | None] | JobResult | Path | Exception
 
@@ -81,10 +62,38 @@ class VideoTranscriberApp:
         self._close_requested = False
         self.settings = load_settings()
         self._entry_placeholders: dict[ttk.Entry, dict[str, object]] = {}
+        self.input_entry: ttk.Entry
+        self.output_entry: ttk.Entry
+        self.delay_entry: ttk.Entry
+        self.exact_speakers_entry: ttk.Entry
+        self.min_speakers_entry: ttk.Entry
+        self.max_speakers_entry: ttk.Entry
+        self.input_browse_button: ttk.Button
+        self.output_browse_button: ttk.Button
+        self.process_button: ttk.Button
+        self.cancel_button: ttk.Button
+        self.open_output_button: ttk.Button
+        self.model_name_combo: ttk.Combobox
+        self.subtitle_format_combo: ttk.Combobox
+        self.speaker_mode_combo: ttk.Combobox
+        self.audio_cleanup_combo: ttk.Combobox
+        self.export_format_combo: ttk.Combobox
+        self.reset_editor_button: ttk.Button
+        self.export_button: ttk.Button
+        self.inline_message_label: tk.Label
+        self.progress_bar: ttk.Progressbar
+        self.workspace_notebook: ttk.Notebook
+        self.overview_tab: ttk.Frame
+        self.logs_tab: ttk.Frame
+        self.transcript_tab: ttk.Frame
+        self.result_summary_label: ttk.Label
+        self.log_text: tk.Text
+        self.speaker_names_text: tk.Text
+        self.editor_text: tk.Text
 
-        self._configure_styles()
+        configure_gui_styles(self.root)
         self._init_state_vars()
-        self._build_ui()
+        build_ui(self)
         self._apply_settings(self.settings)
         self._refresh_input_mode_ui()
         self._reset_result_summary()
@@ -92,135 +101,6 @@ class VideoTranscriberApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_events)
-
-    def _configure_styles(self) -> None:
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-
-        style.configure("App.TFrame", background=PALETTE["bg"])
-        style.configure("Card.TFrame", background=PALETTE["surface"])
-        style.configure("AccentCard.TFrame", background=PALETTE["surface_alt"])
-        style.configure(
-            "HeroTitle.TLabel",
-            background=PALETTE["bg"],
-            foreground=PALETTE["text"],
-            font=("TkDefaultFont", 24, "bold"),
-        )
-        style.configure(
-            "HeroBody.TLabel",
-            background=PALETTE["bg"],
-            foreground=PALETTE["muted"],
-            font=("TkDefaultFont", 11),
-        )
-        style.configure(
-            "Section.TLabel",
-            background=PALETTE["surface"],
-            foreground=PALETTE["text"],
-            font=("TkDefaultFont", 12, "bold"),
-        )
-        style.configure(
-            "Field.TLabel",
-            background=PALETTE["surface"],
-            foreground=PALETTE["text"],
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        style.configure(
-            "Muted.TLabel",
-            background=PALETTE["surface"],
-            foreground=PALETTE["muted"],
-            font=("TkDefaultFont", 10),
-        )
-        style.configure(
-            "Status.TLabel",
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["accent"],
-            font=("TkDefaultFont", 10, "bold"),
-            padding=(14, 8),
-        )
-        style.configure(
-            "SummaryTitle.TLabel",
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["text"],
-            font=("TkDefaultFont", 15, "bold"),
-        )
-        style.configure(
-            "SummaryBody.TLabel",
-            background=PALETTE["surface_alt"],
-            foreground=PALETTE["muted"],
-            font=("TkDefaultFont", 10),
-        )
-        style.configure(
-            "Primary.TButton",
-            background=PALETTE["accent"],
-            foreground="#FFF8F0",
-            borderwidth=0,
-            focusthickness=0,
-            padding=(16, 10),
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        style.map(
-            "Primary.TButton",
-            background=[("active", "#935B37"), ("disabled", PALETTE["border"])],
-            foreground=[("disabled", "#F4EDE3")],
-        )
-        style.configure(
-            "Secondary.TButton",
-            background=PALETTE["surface"],
-            foreground=PALETTE["text"],
-            padding=(14, 9),
-            bordercolor=PALETTE["border"],
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        style.map(
-            "Secondary.TButton",
-            background=[("active", PALETTE["accent_soft"]), ("disabled", PALETTE["surface"])],
-            foreground=[("disabled", PALETTE["muted"])],
-        )
-        style.configure(
-            "Warm.TRadiobutton",
-            background=PALETTE["surface"],
-            foreground=PALETTE["text"],
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        style.map(
-            "Warm.TRadiobutton",
-            background=[("active", PALETTE["surface"])],
-            foreground=[("selected", PALETTE["accent"])],
-        )
-        style.configure(
-            "Warm.TCheckbutton",
-            background=PALETTE["surface"],
-            foreground=PALETTE["text"],
-        )
-        style.configure(
-            "Warm.Horizontal.TProgressbar",
-            troughcolor=PALETTE["accent_soft"],
-            background=PALETTE["accent"],
-            bordercolor=PALETTE["accent_soft"],
-            lightcolor=PALETTE["accent"],
-            darkcolor=PALETTE["accent"],
-        )
-        style.configure(
-            "Warm.TNotebook",
-            background=PALETTE["surface"],
-            borderwidth=0,
-            tabmargins=(0, 0, 0, 0),
-        )
-        style.configure(
-            "Warm.TNotebook.Tab",
-            background=PALETTE["accent_soft"],
-            foreground=PALETTE["muted"],
-            padding=(14, 8),
-            font=("TkDefaultFont", 10, "bold"),
-        )
-        style.map(
-            "Warm.TNotebook.Tab",
-            background=[("selected", PALETTE["surface"]), ("active", "#F4E7D8")],
-            foreground=[("selected", PALETTE["text"])],
-        )
 
     def _init_state_vars(self) -> None:
         self.status_var = tk.StringVar(value="Ready to transcribe")
@@ -258,440 +138,6 @@ class VideoTranscriberApp:
         )
         self.editor_status_var = tk.StringVar(value="Transcript editor is empty")
 
-    def _build_ui(self) -> None:
-        shell = ttk.Frame(self.root, style="App.TFrame", padding=20)
-        shell.pack(fill=tk.BOTH, expand=True)
-        shell.columnconfigure(0, weight=11)
-        shell.columnconfigure(1, weight=14)
-        shell.rowconfigure(1, weight=1)
-
-        self._build_header(shell)
-        self._build_left_column(shell)
-        self._build_right_column(shell)
-
-    def _build_header(self, parent: ttk.Frame) -> None:
-        header = ttk.Frame(parent, style="App.TFrame")
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 18))
-        header.columnconfigure(0, weight=1)
-
-        left = ttk.Frame(header, style="App.TFrame")
-        left.grid(row=0, column=0, sticky="w")
-        ttk.Label(left, text="Video Transcriber", style="HeroTitle.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            left,
-            textvariable=self.hero_hint_var,
-            style="HeroBody.TLabel",
-            wraplength=720,
-            justify=tk.LEFT,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
-        ttk.Label(
-            left,
-            text="Shortcuts: Ctrl+Enter run   Esc cancel   Ctrl+Shift+O output   Ctrl+E export",
-            style="HeroBody.TLabel",
-        ).grid(row=2, column=0, sticky="w", pady=(8, 0))
-
-        status_box = tk.Frame(
-            header,
-            bg=PALETTE["surface_alt"],
-            highlightbackground=PALETTE["border"],
-            highlightthickness=1,
-            bd=0,
-            padx=10,
-            pady=8,
-        )
-        status_box.grid(row=0, column=1, sticky="e")
-        ttk.Label(status_box, text="Current status", style="SummaryBody.TLabel").pack(anchor="w")
-        ttk.Label(status_box, textvariable=self.status_var, style="Status.TLabel").pack(
-            anchor="w",
-            pady=(4, 0),
-        )
-
-    def _build_left_column(self, parent: ttk.Frame) -> None:
-        card = self._card(parent, row=1, column=0, sticky="nsew", padx=(0, 14))
-        card.columnconfigure(0, weight=1)
-        card.columnconfigure(1, weight=1)
-
-        ttk.Label(card, text="Job setup", style="Section.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w"
-        )
-        ttk.Label(
-            card,
-            text=(
-                "Choose your source, tune the output, and start a job when everything looks right."
-            ),
-            style="Muted.TLabel",
-            wraplength=360,
-            justify=tk.LEFT,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 14))
-
-        ttk.Label(card, text="[Source] Input mode", style="Field.TLabel").grid(
-            row=2, column=0, columnspan=2, sticky="w"
-        )
-        mode_frame = ttk.Frame(card, style="Card.TFrame")
-        mode_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Radiobutton(
-            mode_frame,
-            text="Download from URL",
-            variable=self.input_mode_var,
-            value="url",
-            command=self._refresh_input_mode_ui,
-            style="Warm.TRadiobutton",
-        ).pack(side=tk.LEFT)
-        ttk.Radiobutton(
-            mode_frame,
-            text="Use local file",
-            variable=self.input_mode_var,
-            value="file",
-            command=self._refresh_input_mode_ui,
-            style="Warm.TRadiobutton",
-        ).pack(side=tk.LEFT, padx=(18, 0))
-        ttk.Label(card, textvariable=self.mode_hint_var, style="Muted.TLabel", wraplength=360).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(6, 12)
-        )
-
-        ttk.Label(card, text="[Source] Video source", style="Field.TLabel").grid(
-            row=5, column=0, columnspan=2, sticky="w"
-        )
-        self.input_entry = ttk.Entry(card, textvariable=self.input_var)
-        self.input_entry.grid(row=6, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
-        self._install_placeholder(self.input_entry, self.input_var, PLACEHOLDER_TEXT["url"])
-        self.input_browse_button = ttk.Button(
-            card,
-            text="Browse  [Ctrl+L]",
-            command=self._browse_input,
-            style="Secondary.TButton",
-        )
-        self.input_browse_button.grid(row=6, column=1, sticky="ew", pady=(6, 0))
-
-        ttk.Label(card, text="[Output] Output directory", style="Field.TLabel").grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(14, 0)
-        )
-        self.output_entry = ttk.Entry(card, textvariable=self.output_dir_var)
-        self.output_entry.grid(row=8, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
-        self._install_placeholder(
-            self.output_entry,
-            self.output_dir_var,
-            PLACEHOLDER_TEXT["output"],
-        )
-        self.output_browse_button = ttk.Button(
-            card,
-            text="Choose  [Ctrl+Shift+O]",
-            command=self._browse_output_dir,
-            style="Secondary.TButton",
-        )
-        self.output_browse_button.grid(row=8, column=1, sticky="ew", pady=(6, 0))
-
-        ttk.Label(card, text="Transcription options", style="Section.TLabel").grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(18, 0)
-        )
-        ttk.Label(card, text="Whisper model", style="Field.TLabel").grid(
-            row=10, column=0, sticky="w", pady=(10, 0)
-        )
-        ttk.Label(card, text="Subtitle format", style="Field.TLabel").grid(
-            row=10, column=1, sticky="w", pady=(10, 0)
-        )
-        self.model_name_combo = ttk.Combobox(
-            card,
-            textvariable=self.model_name_var,
-            values=MODEL_OPTIONS,
-            state="readonly",
-        )
-        self.model_name_combo.grid(row=11, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
-        self.subtitle_format_combo = ttk.Combobox(
-            card,
-            textvariable=self.subtitle_format_var,
-            values=SUBTITLE_FORMAT_OPTIONS,
-            state="readonly",
-        )
-        self.subtitle_format_combo.grid(row=11, column=1, sticky="ew", pady=(6, 0))
-
-        ttk.Label(card, text="Subtitle delay (seconds)", style="Field.TLabel").grid(
-            row=12, column=0, sticky="w", pady=(12, 0)
-        )
-        ttk.Label(card, text="Speaker count", style="Field.TLabel").grid(
-            row=12, column=1, sticky="w", pady=(12, 0)
-        )
-        self.delay_entry = ttk.Entry(card, textvariable=self.delay_var)
-        self.delay_entry.grid(row=13, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
-        self.speaker_mode_combo = ttk.Combobox(
-            card,
-            textvariable=self.speaker_count_mode_var,
-            values=["auto", "exact", "range"],
-            state="readonly",
-        )
-        self.speaker_mode_combo.grid(row=13, column=1, sticky="ew", pady=(6, 0))
-        self.speaker_mode_combo.bind(
-            "<<ComboboxSelected>>", lambda _event: self._refresh_speaker_mode_ui()
-        )
-
-        toggle_box = ttk.Frame(card, style="Card.TFrame")
-        toggle_box.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        toggle_box.columnconfigure(1, weight=1)
-        toggle_box.columnconfigure(3, weight=1)
-        ttk.Checkbutton(
-            toggle_box,
-            text="Enable speaker labeling",
-            variable=self.enable_diarization_var,
-            command=self._refresh_speaker_mode_ui,
-            style="Warm.TCheckbutton",
-        ).grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(toggle_box, text="Exact speakers", style="Muted.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(10, 0)
-        )
-        self.exact_speakers_entry = ttk.Entry(toggle_box, textvariable=self.exact_speakers_var)
-        self.exact_speakers_entry.grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(4, 0))
-        ttk.Label(toggle_box, text="Minimum speakers", style="Muted.TLabel").grid(
-            row=1, column=1, sticky="w", pady=(10, 0)
-        )
-        self.min_speakers_entry = ttk.Entry(toggle_box, textvariable=self.min_speakers_var)
-        self.min_speakers_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(4, 0))
-        ttk.Label(toggle_box, text="Maximum speakers", style="Muted.TLabel").grid(
-            row=1, column=2, sticky="w", pady=(10, 0)
-        )
-        self.max_speakers_entry = ttk.Entry(toggle_box, textvariable=self.max_speakers_var)
-        self.max_speakers_entry.grid(row=2, column=2, sticky="ew", padx=(0, 8), pady=(4, 0))
-        ttk.Label(toggle_box, text="Audio cleanup", style="Muted.TLabel").grid(
-            row=1, column=3, sticky="w", pady=(10, 0)
-        )
-        self.audio_cleanup_combo = ttk.Combobox(
-            toggle_box,
-            textvariable=self.audio_cleanup_preset_var,
-            values=["off", "light", "meeting"],
-            state="readonly",
-        )
-        self.audio_cleanup_combo.grid(row=2, column=3, sticky="ew", pady=(4, 0))
-        ttk.Checkbutton(
-            toggle_box,
-            text="Save transcript as a text file",
-            variable=self.save_text_var,
-            style="Warm.TCheckbutton",
-        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
-        ttk.Checkbutton(
-            toggle_box,
-            text="Embed subtitles into video",
-            variable=self.embed_subtitles_var,
-            style="Warm.TCheckbutton",
-        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
-
-        self.inline_message_label = tk.Label(
-            card,
-            textvariable=self.inline_message_var,
-            bg=PALETTE["surface"],
-            fg=PALETTE["muted"],
-            justify=tk.LEFT,
-            wraplength=360,
-            anchor="w",
-        )
-        self.inline_message_label.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-
-        action_frame = ttk.Frame(card, style="Card.TFrame")
-        action_frame.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(18, 0))
-        self.process_button = ttk.Button(
-            action_frame,
-            text="Start Transcription  [Ctrl+Enter]",
-            command=self._start_processing,
-            style="Primary.TButton",
-        )
-        self.process_button.pack(side=tk.LEFT)
-        self.cancel_button = ttk.Button(
-            action_frame,
-            text="Cancel  [Esc]",
-            command=self._cancel_processing,
-            style="Secondary.TButton",
-            state=tk.DISABLED,
-        )
-        self.cancel_button.pack(side=tk.LEFT, padx=(10, 0))
-        self.open_output_button = ttk.Button(
-            action_frame,
-            text="Open Output Folder",
-            command=self._open_output_dir,
-            style="Secondary.TButton",
-            state=tk.DISABLED,
-        )
-        self.open_output_button.pack(side=tk.LEFT, padx=(10, 0))
-
-    def _build_right_column(self, parent: ttk.Frame) -> None:
-        right = ttk.Frame(parent, style="App.TFrame")
-        right.grid(row=1, column=1, sticky="nsew")
-        right.rowconfigure(1, weight=1)
-        right.columnconfigure(0, weight=1)
-
-        summary = self._accent_card(right, row=0, column=0, sticky="ew", pady=(0, 14))
-        summary.columnconfigure(0, weight=1)
-        ttk.Label(summary, textvariable=self.summary_title_var, style="SummaryTitle.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            summary,
-            textvariable=self.summary_body_var,
-            style="SummaryBody.TLabel",
-            wraplength=560,
-            justify=tk.LEFT,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 10))
-        ttk.Label(summary, textvariable=self.progress_caption_var, style="SummaryBody.TLabel").grid(
-            row=2, column=0, sticky="w"
-        )
-        self.progress_bar = ttk.Progressbar(
-            summary,
-            orient=tk.HORIZONTAL,
-            mode="determinate",
-            maximum=100,
-            style="Warm.Horizontal.TProgressbar",
-        )
-        self.progress_bar.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-
-        workspace = self._card(right, row=1, column=0, sticky="nsew")
-        workspace.rowconfigure(1, weight=1)
-        workspace.columnconfigure(0, weight=1)
-        ttk.Label(workspace, text="Workspace", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            workspace,
-            text="Follow the job, review logs, and refine the transcript in one place.",
-            style="Muted.TLabel",
-        ).grid(row=0, column=0, sticky="e")
-
-        self.workspace_notebook = ttk.Notebook(workspace, style="Warm.TNotebook")
-        self.workspace_notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
-
-        self.overview_tab = ttk.Frame(self.workspace_notebook, style="Card.TFrame")
-        self.logs_tab = ttk.Frame(self.workspace_notebook, style="Card.TFrame")
-        self.transcript_tab = ttk.Frame(self.workspace_notebook, style="Card.TFrame")
-        self.workspace_notebook.add(self.overview_tab, text="Overview")
-        self.workspace_notebook.add(self.logs_tab, text="Logs")
-        self.workspace_notebook.add(self.transcript_tab, text="Transcript")
-
-        self._build_overview_tab()
-        self._build_logs_tab()
-        self._build_transcript_tab()
-
-    def _build_overview_tab(self) -> None:
-        self.overview_tab.columnconfigure(0, weight=1)
-
-        self.result_summary_label = ttk.Label(
-            self.overview_tab,
-            textvariable=self.summary_body_var,
-            style="Muted.TLabel",
-            wraplength=560,
-            justify=tk.LEFT,
-        )
-        self.result_summary_label.grid(row=0, column=0, sticky="ew", pady=(10, 12))
-
-        quick_actions = ttk.Frame(self.overview_tab, style="Card.TFrame")
-        quick_actions.grid(row=1, column=0, sticky="w")
-        ttk.Button(
-            quick_actions,
-            text="Open Output Folder  [Ctrl+O]",
-            command=self._open_output_dir,
-            style="Secondary.TButton",
-        ).pack(side=tk.LEFT)
-        ttk.Button(
-            quick_actions,
-            text="Focus Transcript Editor",
-            command=lambda: self.workspace_notebook.select(self.transcript_tab),
-            style="Secondary.TButton",
-        ).pack(side=tk.LEFT, padx=(10, 0))
-
-    def _build_logs_tab(self) -> None:
-        self.logs_tab.columnconfigure(0, weight=1)
-        self.logs_tab.rowconfigure(0, weight=1)
-        self.log_text = scrolledtext.ScrolledText(
-            self.logs_tab,
-            height=18,
-            wrap=tk.WORD,
-            relief=tk.FLAT,
-            bd=0,
-            bg=PALETTE["editor_bg"],
-            fg=PALETTE["text"],
-            insertbackground=PALETTE["text"],
-            highlightthickness=1,
-            highlightbackground=PALETTE["border"],
-            padx=14,
-            pady=14,
-        )
-        self.log_text.grid(row=0, column=0, sticky="nsew", pady=(10, 0))
-
-    def _build_transcript_tab(self) -> None:
-        self.transcript_tab.columnconfigure(0, weight=1)
-        self.transcript_tab.rowconfigure(2, weight=1)
-
-        header = ttk.Frame(self.transcript_tab, style="Card.TFrame")
-        header.grid(row=0, column=0, sticky="ew", pady=(10, 8))
-        header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.editor_status_var, style="Muted.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-
-        actions = ttk.Frame(header, style="Card.TFrame")
-        actions.grid(row=0, column=1, sticky="e")
-        self.export_format_combo = ttk.Combobox(
-            actions,
-            textvariable=self.export_format_var,
-            values=["txt", "ass", "srt", "vtt"],
-            state="readonly",
-            width=8,
-        )
-        self.export_format_combo.pack(side=tk.LEFT)
-        self.reset_editor_button = ttk.Button(
-            actions,
-            text="Reset",
-            command=self._reset_transcript_editor,
-            style="Secondary.TButton",
-        )
-        self.reset_editor_button.pack(side=tk.LEFT, padx=(8, 0))
-        self.export_button = ttk.Button(
-            actions,
-            text="Export Edited Transcript  [Ctrl+E]",
-            command=self._export_edited_transcript,
-            style="Secondary.TButton",
-        )
-        self.export_button.pack(side=tk.LEFT, padx=(8, 0))
-
-        rename_box = ttk.Frame(self.transcript_tab, style="Card.TFrame")
-        rename_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
-        rename_box.columnconfigure(0, weight=1)
-        ttk.Label(
-            rename_box,
-            text="Speaker names (one per line: SPEAKER_00 = Chair)",
-            style="Muted.TLabel",
-        ).grid(row=0, column=0, sticky="w")
-        self.speaker_names_text = scrolledtext.ScrolledText(
-            rename_box,
-            height=4,
-            wrap=tk.WORD,
-            relief=tk.FLAT,
-            bd=0,
-            bg=PALETTE["editor_bg"],
-            fg=PALETTE["text"],
-            insertbackground=PALETTE["text"],
-            highlightthickness=1,
-            highlightbackground=PALETTE["border"],
-            padx=10,
-            pady=10,
-        )
-        self.speaker_names_text.grid(row=1, column=0, sticky="ew", pady=(6, 0))
-
-        self.editor_text = scrolledtext.ScrolledText(
-            self.transcript_tab,
-            height=20,
-            wrap=tk.WORD,
-            relief=tk.FLAT,
-            bd=0,
-            bg=PALETTE["editor_bg"],
-            fg=PALETTE["text"],
-            insertbackground=PALETTE["text"],
-            highlightthickness=1,
-            highlightbackground=PALETTE["border"],
-            padx=16,
-            pady=16,
-        )
-        self.editor_text.grid(row=2, column=0, sticky="nsew")
-        self.editor_text.bind("<<Modified>>", self._handle_editor_modified)
-
     def _apply_settings(self, settings: AppSettings) -> None:
         self.input_mode_var.set(settings.input_mode)
         self.output_dir_var.set(settings.output_dir or str(default_output_dir()))
@@ -708,54 +154,6 @@ class VideoTranscriberApp:
         self.subtitle_format_var.set(settings.subtitle_format)
         self._refresh_speaker_mode_ui()
         self._refresh_placeholders()
-
-    def _card(
-        self,
-        parent: tk.Misc,
-        *,
-        row: int,
-        column: int,
-        sticky: str,
-        padx: tuple[int, int] | int = 0,
-        pady: tuple[int, int] | int = 0,
-    ) -> ttk.Frame:
-        frame = tk.Frame(
-            parent,
-            bg=PALETTE["surface"],
-            highlightbackground=PALETTE["border"],
-            highlightthickness=1,
-            bd=0,
-            padx=18,
-            pady=18,
-        )
-        frame.grid(row=row, column=column, sticky=sticky, padx=padx, pady=pady)
-        wrapper = ttk.Frame(frame, style="Card.TFrame")
-        wrapper.pack(fill=tk.BOTH, expand=True)
-        return wrapper
-
-    def _accent_card(
-        self,
-        parent: tk.Misc,
-        *,
-        row: int,
-        column: int,
-        sticky: str,
-        padx: tuple[int, int] | int = 0,
-        pady: tuple[int, int] | int = 0,
-    ) -> ttk.Frame:
-        frame = tk.Frame(
-            parent,
-            bg=PALETTE["surface_alt"],
-            highlightbackground=PALETTE["border"],
-            highlightthickness=1,
-            bd=0,
-            padx=18,
-            pady=18,
-        )
-        frame.grid(row=row, column=column, sticky=sticky, padx=padx, pady=pady)
-        wrapper = ttk.Frame(frame, style="AccentCard.TFrame")
-        wrapper.pack(fill=tk.BOTH, expand=True)
-        return wrapper
 
     def _browse_input(self) -> None:
         if self._current_input_mode() != "file":
