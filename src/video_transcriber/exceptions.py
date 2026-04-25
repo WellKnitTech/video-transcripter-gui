@@ -19,3 +19,7 @@ class ProcessingError(VideoTranscriberError):
 
 class CancelledError(VideoTranscriberError):
     """Raised when the current job is cancelled."""
+
+
+class SettingsError(VideoTranscriberError):
+    """Raised when application settings cannot be persisted safely."""

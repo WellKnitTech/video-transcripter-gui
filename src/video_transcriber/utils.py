@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import re
 import shutil
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .exceptions import SettingsError
 from .models import AppSettings
 
+LOGGER = logging.getLogger(__name__)
 SETTINGS_PATH = Path.home() / ".video_transcriber_gui.json"
 SAFE_NAME_PATTERN = re.compile(r"[^A-Za-z0-9._ -]+")
 
@@ -38,27 +42,13 @@ def calculate_sha1(filepath: Path) -> str:
 
 def convert_to_ass_time(seconds: float) -> str:
     """Convert seconds to ASS timestamp format."""
-    seconds = max(seconds, 0.0)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centiseconds = int(round((seconds - int(seconds)) * 100))
-    if centiseconds == 100:
-        secs += 1
-        centiseconds = 0
+    hours, minutes, secs, centiseconds = _split_timestamp_parts(seconds, 100)
     return f"{hours}:{minutes:02}:{secs:02}.{centiseconds:02}"
 
 
 def convert_to_srt_time(seconds: float) -> str:
     """Convert seconds to SRT timestamp format."""
-    seconds = max(seconds, 0.0)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    milliseconds = int(round((seconds - int(seconds)) * 1000))
-    if milliseconds == 1000:
-        secs += 1
-        milliseconds = 0
+    hours, minutes, secs, milliseconds = _split_timestamp_parts(seconds, 1000)
     return f"{hours:02}:{minutes:02}:{secs:02},{milliseconds:03}"
 
 
@@ -112,7 +102,28 @@ def escape_srt_text(text: str) -> str:
 
 def save_settings(settings: AppSettings) -> None:
     """Persist recent application settings."""
-    SETTINGS_PATH.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
+    payload = json.dumps(asdict(settings), indent=2)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=SETTINGS_PATH.parent,
+            prefix=f".{SETTINGS_PATH.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        os.replace(temp_path, SETTINGS_PATH)
+    except OSError as exc:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise SettingsError(f"Unable to save application settings: {exc}") from exc
 
 
 def load_settings() -> AppSettings:
@@ -122,10 +133,26 @@ def load_settings() -> AppSettings:
     try:
         raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        LOGGER.warning("Unable to read settings from %s. Falling back to defaults.", SETTINGS_PATH)
+        return AppSettings()
+    if not isinstance(raw, dict):
+        LOGGER.warning("Settings file did not contain an object. Falling back to defaults.")
         return AppSettings()
     valid_keys = {field.name for field in AppSettings.__dataclass_fields__.values()}
     filtered = {key: value for key, value in raw.items() if key in valid_keys}
-    return AppSettings(**filtered)
+    try:
+        return AppSettings(**filtered)
+    except TypeError:
+        LOGGER.warning("Settings file contained invalid fields. Falling back to defaults.")
+        return AppSettings()
+
+
+def _split_timestamp_parts(seconds: float, precision: int) -> tuple[int, int, int, int]:
+    total_units = max(int(round(max(seconds, 0.0) * precision)), 0)
+    total_seconds, fractional = divmod(total_units, precision)
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return hours, minutes, secs, fractional
 
 
 def default_output_dir() -> Path:

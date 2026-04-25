@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from video_transcriber.models import TranscriptSegment
 from video_transcriber.subtitles import (
+    _seconds_to_editor_time,
     parse_editable_transcript,
     render_editable_transcript,
     write_subtitle_file,
@@ -65,3 +68,35 @@ def test_editable_transcript_round_trip() -> None:
     rendered = render_editable_transcript(segments)
     parsed = parse_editable_transcript(rendered)
     assert parsed == segments
+
+
+def test_editor_time_rolls_over_minutes_and_hours() -> None:
+    assert _seconds_to_editor_time(59.9996) == "00:01:00.000"
+    assert _seconds_to_editor_time(3599.9996) == "01:00:00.000"
+
+
+def test_parse_editable_transcript_rejects_empty_text() -> None:
+    with pytest.raises(ValueError, match="Line 1: transcript text cannot be empty"):
+        parse_editable_transcript("[00:00:01.000 --> 00:00:02.000]   ")
+
+
+def test_parse_editable_transcript_rejects_reversed_timestamps() -> None:
+    with pytest.raises(ValueError, match="Line 1: end timestamp must be greater"):
+        parse_editable_transcript("[00:00:02.000 --> 00:00:01.000] Hello")
+
+
+def test_parse_editable_transcript_rejects_overlapping_segments() -> None:
+    with pytest.raises(ValueError, match="Line 2: timestamps must stay in order"):
+        parse_editable_transcript(
+            "\n".join(
+                [
+                    "[00:00:01.000 --> 00:00:03.000] Hello",
+                    "[00:00:02.500 --> 00:00:04.000] World",
+                ]
+            )
+        )
+
+
+def test_parse_editable_transcript_rejects_empty_document() -> None:
+    with pytest.raises(ValueError, match="Edited transcript is empty"):
+        parse_editable_transcript("\n\n")

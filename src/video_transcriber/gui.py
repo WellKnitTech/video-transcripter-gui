@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Literal, cast
 
-from .exceptions import CancelledError, VideoTranscriberError
+from .exceptions import CancelledError, SettingsError, VideoTranscriberError
 from .models import (
     AppSettings,
     CancellationToken,
@@ -36,6 +36,8 @@ SUBTITLE_FORMAT_OPTIONS = ["ass", "srt", "vtt"]
 QUEUE_PROGRESS = "progress"
 QUEUE_RESULT = "result"
 QUEUE_ERROR = "error"
+QUEUE_EXPORT_RESULT = "export_result"
+QUEUE_EXPORT_ERROR = "export_error"
 PLACEHOLDER_TEXT = {
     "url": "https://example.com/video",
     "file": "/path/to/video.mp4",
@@ -57,7 +59,7 @@ PALETTE = {
     "editor_bg": "#FFFDF8",
 }
 
-QueuePayload = tuple[str, str, float | None] | JobResult | Exception
+QueuePayload = tuple[str, str, float | None] | JobResult | Path | Exception
 
 
 class VideoTranscriberApp:
@@ -74,7 +76,9 @@ class VideoTranscriberApp:
         self.event_queue: queue.Queue[tuple[str, QueuePayload]] = queue.Queue()
         self.current_result: JobResult | None = None
         self.active_worker: threading.Thread | None = None
+        self.active_export_worker: threading.Thread | None = None
         self.cancellation_token: CancellationToken | None = None
+        self._close_requested = False
         self.settings = load_settings()
         self._entry_placeholders: dict[ttk.Entry, dict[str, object]] = {}
 
@@ -624,25 +628,28 @@ class VideoTranscriberApp:
 
         actions = ttk.Frame(header, style="Card.TFrame")
         actions.grid(row=0, column=1, sticky="e")
-        ttk.Combobox(
+        self.export_format_combo = ttk.Combobox(
             actions,
             textvariable=self.export_format_var,
             values=["txt", "ass", "srt", "vtt"],
             state="readonly",
             width=8,
-        ).pack(side=tk.LEFT)
-        ttk.Button(
+        )
+        self.export_format_combo.pack(side=tk.LEFT)
+        self.reset_editor_button = ttk.Button(
             actions,
             text="Reset",
             command=self._reset_transcript_editor,
             style="Secondary.TButton",
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(
+        )
+        self.reset_editor_button.pack(side=tk.LEFT, padx=(8, 0))
+        self.export_button = ttk.Button(
             actions,
             text="Export Edited Transcript  [Ctrl+E]",
             command=self._export_edited_transcript,
             style="Secondary.TButton",
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        )
+        self.export_button.pack(side=tk.LEFT, padx=(8, 0))
 
         rename_box = ttk.Frame(self.transcript_tab, style="Card.TFrame")
         rename_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -877,6 +884,7 @@ class VideoTranscriberApp:
                     if progress is not None:
                         self.progress_bar["value"] = progress
                 elif event_type == QUEUE_RESULT and isinstance(payload, JobResult):
+                    self.active_worker = None
                     self.current_result = payload
                     self._set_running_state(False)
                     self.progress_bar["value"] = 100
@@ -896,7 +904,10 @@ class VideoTranscriberApp:
                         "Loaded generated transcript. Make edits and export when ready."
                     )
                     self.workspace_notebook.select(self.transcript_tab)
+                    if self._close_requested:
+                        self._finish_close_when_idle()
                 elif event_type == QUEUE_ERROR and isinstance(payload, Exception):
+                    self.active_worker = None
                     self._set_running_state(False)
                     if isinstance(payload, CancelledError):
                         self.status_var.set("Cancelled")
@@ -910,17 +921,37 @@ class VideoTranscriberApp:
                             ),
                             tone="warning",
                         )
+                        if self._close_requested:
+                            self._finish_close_when_idle()
                     else:
+                        self._close_requested = False
                         self.status_var.set("Failed")
                         self.progress_caption_var.set("Something went wrong during processing")
                         message = str(payload)
                         self._append_log(f"Error: {message}")
                         self._set_inline_message(message, tone="danger")
                         messagebox.showerror("Processing Error", message)
+                elif event_type == QUEUE_EXPORT_RESULT and isinstance(payload, Path):
+                    self.active_export_worker = None
+                    self._set_export_state(False)
+                    self._append_log(f"Edited transcript exported: {payload}")
+                    self.editor_status_var.set(f"Last export: {payload.name}")
+                    self._set_inline_message(
+                        f"Saved edited transcript to {payload}", tone="success"
+                    )
+                elif event_type == QUEUE_EXPORT_ERROR and isinstance(payload, Exception):
+                    self.active_export_worker = None
+                    self._set_export_state(False)
+                    message = str(payload)
+                    self._append_log(f"Export error: {message}")
+                    self.editor_status_var.set("Export failed")
+                    self._set_inline_message(message, tone="danger")
+                    messagebox.showerror("Export Error", message)
         except queue.Empty:
             pass
         finally:
-            self.root.after(100, self._poll_events)
+            if self.root.winfo_exists():
+                self.root.after(100, self._poll_events)
 
     def _friendly_status(self, message: str) -> str:
         lowered = message.lower()
@@ -972,6 +1003,11 @@ class VideoTranscriberApp:
         self.output_browse_button.configure(state=field_state)
         if not is_running:
             self._refresh_speaker_mode_ui()
+
+    def _set_export_state(self, is_exporting: bool) -> None:
+        self.export_button.configure(state=tk.DISABLED if is_exporting else tk.NORMAL)
+        self.reset_editor_button.configure(state=tk.DISABLED if is_exporting else tk.NORMAL)
+        self.export_format_combo.configure(state=tk.DISABLED if is_exporting else "readonly")
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-Return>", self._handle_start_shortcut)
@@ -1089,6 +1125,10 @@ class VideoTranscriberApp:
             self.workspace_notebook.select(self.transcript_tab)
             return
 
+        if self.active_export_worker and self.active_export_worker.is_alive():
+            self._set_inline_message("An export is already running.", tone="warning")
+            return
+
         try:
             segments = parse_editable_transcript(self.editor_text.get("1.0", tk.END))
         except ValueError as exc:
@@ -1099,29 +1139,57 @@ class VideoTranscriberApp:
         speaker_names = self._parse_speaker_name_map()
         export_format = self.export_format_var.get()
         base_name = self.current_result.video_file.stem + "_edited"
-        output_dir = Path(self.output_dir_var.get()).expanduser()
+        output_dir = Path(
+            self._value_without_placeholder(self.output_entry, self.output_dir_var)
+            or default_output_dir()
+        ).expanduser()
+        export_path = output_dir / f"{base_name}.{export_format}"
 
-        if export_format == "txt":
-            export_path = output_dir / f"{base_name}.txt"
-            write_text_transcript(
-                segments,
-                export_path,
-                self.current_result.video_file,
-                None,
-                speaker_names,
-            )
-        else:
-            export_path = output_dir / f"{base_name}.{export_format}"
-            write_subtitle_file(
-                segments,
-                export_path,
-                cast(SubtitleFormat, export_format),
-                speaker_names,
-            )
+        self._set_export_state(True)
+        self._append_log(f"Exporting edited transcript to {export_path}")
+        self.editor_status_var.set("Export in progress")
+        self._set_inline_message("Exporting edited transcript in the background.", tone="muted")
 
-        self._append_log(f"Edited transcript exported: {export_path}")
-        self.editor_status_var.set(f"Last export: {export_path.name}")
-        self._set_inline_message(f"Saved edited transcript to {export_path}", tone="success")
+        self.active_export_worker = threading.Thread(
+            target=self._run_export,
+            args=(segments, speaker_names, export_path, export_format),
+            daemon=True,
+        )
+        self.active_export_worker.start()
+
+    def _run_export(
+        self,
+        segments: list[TranscriptSegment],
+        speaker_names: dict[str, str],
+        export_path: Path,
+        export_format: str,
+    ) -> None:
+        try:
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            current_result = self.current_result
+            if export_format == "txt":
+                if current_result is None:
+                    raise RuntimeError(
+                        "Run a job first so the transcript editor has content to export."
+                    )
+                write_text_transcript(
+                    segments,
+                    export_path,
+                    current_result.video_file,
+                    None,
+                    speaker_names,
+                )
+            else:
+                write_subtitle_file(
+                    segments,
+                    export_path,
+                    cast(SubtitleFormat, export_format),
+                    speaker_names,
+                )
+            self.event_queue.put((QUEUE_EXPORT_RESULT, export_path))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("Edited transcript export failed")
+            self.event_queue.put((QUEUE_EXPORT_ERROR, exc))
 
     def _reset_transcript_editor(self) -> None:
         if self.current_result is None:
@@ -1181,7 +1249,15 @@ class VideoTranscriberApp:
             model_name=self.model_name_var.get(),
             subtitle_format=self._current_subtitle_format(),
         )
-        save_settings(settings)
+        try:
+            save_settings(settings)
+        except SettingsError as exc:
+            LOGGER.warning("Unable to persist settings: %s", exc)
+            self._append_log(str(exc))
+            self._set_inline_message(
+                "Settings could not be saved. The app will keep running with your current values.",
+                tone="warning",
+            )
 
     def _parse_optional_int(self, raw_value: str) -> int | None:
         value = raw_value.strip()
@@ -1254,6 +1330,33 @@ class VideoTranscriberApp:
 
     def _on_close(self) -> None:
         self._persist_settings()
+        if self.active_export_worker and self.active_export_worker.is_alive():
+            self._set_inline_message(
+                "Wait for the export to finish before closing the app.",
+                tone="warning",
+            )
+            self.status_var.set("Waiting for export")
+            return
+        if self.active_worker and self.active_worker.is_alive():
+            if not self._close_requested:
+                self._close_requested = True
+                self._cancel_processing()
+                self._set_inline_message(
+                    "Closing after the active job cancels cleanly.",
+                    tone="warning",
+                )
+                self.status_var.set("Cancelling before close")
+                self.progress_caption_var.set("Waiting for the worker thread to exit safely")
+            self.root.after(100, self._finish_close_when_idle)
+            return
+        self.root.destroy()
+
+    def _finish_close_when_idle(self) -> None:
+        if not self.root.winfo_exists():
+            return
+        if self.active_worker and self.active_worker.is_alive():
+            self.root.after(100, self._finish_close_when_idle)
+            return
         self.root.destroy()
 
 

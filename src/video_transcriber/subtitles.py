@@ -17,7 +17,7 @@ from .utils import (
 
 EDITOR_LINE_RE = re.compile(
     r"^\[(?P<start>\d{2}:\d{2}:\d{2}\.\d{3}) --> (?P<end>\d{2}:\d{2}:\d{2}\.\d{3})\]"
-    r"(?: \((?P<speaker>[^)]+)\))? (?P<text>.*)$"
+    r"(?: \((?P<speaker>[^)]+)\))?(?: (?P<text>.*))?$"
 )
 
 SPEAKER_COLORS = [
@@ -179,25 +179,42 @@ def render_editable_transcript(segments: list[TranscriptSegment]) -> str:
 def parse_editable_transcript(text: str) -> list[TranscriptSegment]:
     """Parse edited transcript text back into timestamped segments."""
     segments: list[TranscriptSegment] = []
-    for raw_line in text.splitlines():
+    previous_end: float | None = None
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
         match = EDITOR_LINE_RE.match(line)
         if match is None:
             raise ValueError(
-                "Edited transcript lines must look like "
+                f"Line {line_number}: edited transcript lines must look like "
                 "[00:00:01.000 --> 00:00:02.500] Transcript text"
+            )
+        start = _editor_time_to_seconds(match.group("start"))
+        end = _editor_time_to_seconds(match.group("end"))
+        transcript_text = (match.group("text") or "").strip()
+        if not transcript_text:
+            raise ValueError(f"Line {line_number}: transcript text cannot be empty.")
+        if end <= start:
+            raise ValueError(
+                f"Line {line_number}: end timestamp must be greater than start timestamp."
+            )
+        if previous_end is not None and start < previous_end:
+            raise ValueError(
+                f"Line {line_number}: timestamps must stay in order without overlapping."
             )
         speaker_text = match.group("speaker")
         segments.append(
             TranscriptSegment(
-                start=_editor_time_to_seconds(match.group("start")),
-                end=_editor_time_to_seconds(match.group("end")),
-                text=match.group("text").strip(),
+                start=start,
+                end=end,
+                text=transcript_text,
                 speaker=speaker_text.strip() if speaker_text is not None else None,
             )
         )
+        previous_end = end
+    if not segments:
+        raise ValueError("Edited transcript is empty. Add at least one timestamped line.")
     return segments
 
 
@@ -210,13 +227,10 @@ def _display_speaker_label(speaker: str | None, speaker_names: dict[str, str] | 
 
 
 def _seconds_to_editor_time(seconds: float) -> str:
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    milliseconds = int(round((seconds - int(seconds)) * 1000))
-    if milliseconds == 1000:
-        secs += 1
-        milliseconds = 0
+    total_milliseconds = max(int(round(max(seconds, 0.0) * 1000)), 0)
+    total_seconds, milliseconds = divmod(total_milliseconds, 1000)
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
     return f"{hours:02}:{minutes:02}:{secs:02}.{milliseconds:03}"
 
 

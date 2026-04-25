@@ -1,5 +1,9 @@
+import json
 from pathlib import Path
 
+import pytest
+
+from video_transcriber.exceptions import SettingsError
 from video_transcriber.models import AppSettings
 from video_transcriber.utils import (
     calculate_sha1,
@@ -7,6 +11,7 @@ from video_transcriber.utils import (
     convert_to_srt_time,
     escape_ass_text,
     is_url,
+    load_settings,
     sanitize_filename,
     save_settings,
     wrap_subtitle_text,
@@ -26,6 +31,11 @@ def test_convert_to_ass_time_rounds_expected_format() -> None:
 
 def test_convert_to_srt_time_rounds_expected_format() -> None:
     assert convert_to_srt_time(3661.34) == "01:01:01,340"
+
+
+def test_timestamp_conversion_rolls_over_correctly() -> None:
+    assert convert_to_ass_time(59.995) == "0:01:00.00"
+    assert convert_to_srt_time(3599.9996) == "01:00:00,000"
 
 
 def test_escape_ass_text_wraps_and_escapes() -> None:
@@ -54,3 +64,29 @@ def test_save_settings_writes_json(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("video_transcriber.utils.SETTINGS_PATH", settings_path)
     save_settings(AppSettings(output_dir="/tmp"))
     assert settings_path.exists()
+    assert json.loads(settings_path.read_text(encoding="utf-8"))["output_dir"] == "/tmp"
+
+
+def test_save_settings_raises_clean_error_when_replace_fails(monkeypatch, tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr("video_transcriber.utils.SETTINGS_PATH", settings_path)
+
+    def fail_replace(_source: Path, _destination: Path) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("video_transcriber.utils.os.replace", fail_replace)
+
+    with pytest.raises(SettingsError, match="Unable to save application settings"):
+        save_settings(AppSettings(output_dir="/tmp"))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_load_settings_returns_defaults_for_invalid_json(monkeypatch, tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr("video_transcriber.utils.SETTINGS_PATH", settings_path)
+
+    settings = load_settings()
+
+    assert settings == AppSettings()
