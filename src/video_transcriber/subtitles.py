@@ -17,7 +17,7 @@ from .utils import (
 
 EDITOR_LINE_RE = re.compile(
     r"^\[(?P<start>\d{2}:\d{2}:\d{2}\.\d{3}) --> (?P<end>\d{2}:\d{2}:\d{2}\.\d{3})\]"
-    r"(?: \(Speaker (?P<speaker>\d+)\))? (?P<text>.*)$"
+    r"(?: \((?P<speaker>[^)]+)\))? (?P<text>.*)$"
 )
 
 SPEAKER_COLORS = [
@@ -32,12 +32,12 @@ def write_subtitle_file(
     segments: list[TranscriptSegment],
     subtitle_path: Path,
     subtitle_format: str,
-    num_speakers: int,
+    speaker_names: dict[str, str] | None = None,
 ) -> Path:
     """Write subtitle output in the requested format."""
     subtitle_path.parent.mkdir(parents=True, exist_ok=True)
     if subtitle_format == "ass":
-        subtitle_path.write_text(_build_ass(segments, num_speakers), encoding="utf-8")
+        subtitle_path.write_text(_build_ass(segments, speaker_names), encoding="utf-8")
         return subtitle_path
     if subtitle_format == "srt":
         subtitle_path.write_text(_build_srt(segments), encoding="utf-8")
@@ -53,11 +53,13 @@ def write_text_transcript(
     text_path: Path,
     video_file: Path,
     source_url: str | None,
-    enable_diarization: bool,
-    num_speakers: int,
+    speaker_names: dict[str, str] | None = None,
 ) -> Path:
     """Write a human-readable transcript with metadata."""
     last_end = segments[-1].end if segments else 0.0
+    speaker_labels = sorted(
+        {segment.speaker for segment in segments if segment.speaker is not None}
+    )
     lines = [
         "===== Forensic Metadata =====",
         f"Source URL: {source_url}",
@@ -66,19 +68,25 @@ def write_text_transcript(
         f"Accessed Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"Original Filename: {video_file.name}",
     ]
-    if enable_diarization:
-        lines.append(f"Number of Speakers: {num_speakers}")
+    if speaker_labels:
+        lines.append(f"Speaker Labels: {len(speaker_labels)}")
     lines.extend(["=============================", ""])
 
     for segment in segments:
-        speaker_label = f"Speaker {segment.speaker}" if segment.speaker is not None else "Unknown"
+        speaker_label = _display_speaker_label(segment.speaker, speaker_names)
         lines.append(f"[{segment.start:.2f} - {segment.end:.2f}] {speaker_label}: {segment.text}")
 
     text_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return text_path
 
 
-def _build_ass(segments: list[TranscriptSegment], num_speakers: int) -> str:
+def _build_ass(
+    segments: list[TranscriptSegment], speaker_names: dict[str, str] | None = None
+) -> str:
+    unique_speakers = [
+        speaker for speaker in sorted({seg.speaker for seg in segments if seg.speaker})
+    ]
+    style_names = {speaker: f"Speaker{index}" for index, speaker in enumerate(unique_speakers)}
     lines = [
         "[Script Info]",
         "Title: Whisper Transcript",
@@ -98,30 +106,29 @@ def _build_ass(segments: list[TranscriptSegment], num_speakers: int) -> str:
             "-1,0,0,0,100,100,0,0.00,1,1.00,0.00,2,10,10,10,1"
         ),
     ]
-    for speaker_index in range(num_speakers):
+    for speaker_index, speaker in enumerate(unique_speakers):
         color = SPEAKER_COLORS[speaker_index % len(SPEAKER_COLORS)]
         lines.append(
-            
-                f"Style: Speaker{speaker_index},Arial,20,{color},&H000000FF,"
-                "&H00000000,&H64000000,-1,0,0,0,100,100,0,0.00,1,1.00,0.00,2,"
-                "10,10,10,1"
-            
+            f"Style: {style_names[speaker]},Arial,20,{color},&H000000FF,"
+            "&H00000000,&H64000000,-1,0,0,0,100,100,0,0.00,1,1.00,0.00,2,"
+            "10,10,10,1"
         )
 
-    lines.extend([
-        "",
-        "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ])
+    lines.extend(
+        [
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        ]
+    )
     for segment in segments:
-        style = f"Speaker{segment.speaker}" if segment.speaker is not None else "Default"
+        style = style_names[segment.speaker] if segment.speaker is not None else "Default"
+        speaker_name = _display_speaker_label(segment.speaker, speaker_names)
         lines.append(
-            
-                "Dialogue: 0,"
-                f"{convert_to_ass_time(segment.start)},"
-                f"{convert_to_ass_time(segment.end)},"
-                f"{style},,0,0,0,,{escape_ass_text(segment.text)}"
-            
+            "Dialogue: 0,"
+            f"{convert_to_ass_time(segment.start)},"
+            f"{convert_to_ass_time(segment.end)},"
+            f"{style},{speaker_name},0,0,0,,{escape_ass_text(segment.text)}"
         )
     return "\n".join(lines) + "\n"
 
@@ -161,7 +168,7 @@ def render_editable_transcript(segments: list[TranscriptSegment]) -> str:
     """Render timestamped transcript text for user editing."""
     lines = []
     for segment in segments:
-        speaker = f" (Speaker {segment.speaker})" if segment.speaker is not None else ""
+        speaker = f" ({segment.speaker})" if segment.speaker is not None else ""
         lines.append(
             f"[{_seconds_to_editor_time(segment.start)} --> {_seconds_to_editor_time(segment.end)}]"
             f"{speaker} {segment.text.strip()}"
@@ -188,10 +195,18 @@ def parse_editable_transcript(text: str) -> list[TranscriptSegment]:
                 start=_editor_time_to_seconds(match.group("start")),
                 end=_editor_time_to_seconds(match.group("end")),
                 text=match.group("text").strip(),
-                speaker=int(speaker_text) if speaker_text is not None else None,
+                speaker=speaker_text.strip() if speaker_text is not None else None,
             )
         )
     return segments
+
+
+def _display_speaker_label(speaker: str | None, speaker_names: dict[str, str] | None = None) -> str:
+    if speaker is None:
+        return "Unknown"
+    if speaker_names is None:
+        return speaker
+    return speaker_names.get(speaker, speaker)
 
 
 def _seconds_to_editor_time(seconds: float) -> str:

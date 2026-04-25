@@ -12,14 +12,14 @@ from video_transcriber.subtitles import (
 def test_write_ass_subtitle_file_contains_dialogue(tmp_path: Path) -> None:
     output = tmp_path / "sample.ass"
     write_subtitle_file(
-        [TranscriptSegment(start=0.0, end=1.0, text="Hello world", speaker=1)],
+        [TranscriptSegment(start=0.0, end=1.0, text="Hello world", speaker="SPEAKER_01")],
         output,
         "ass",
-        2,
+        {"SPEAKER_01": "Chair"},
     )
     content = output.read_text(encoding="utf-8")
     assert "[Events]" in content
-    assert "Dialogue: 0,0:00:00.00,0:00:01.00,Speaker1" in content
+    assert "Dialogue: 0,0:00:00.00,0:00:01.00,Speaker0,Chair" in content
 
 
 def test_write_srt_subtitle_file_contains_blocks(tmp_path: Path) -> None:
@@ -28,7 +28,6 @@ def test_write_srt_subtitle_file_contains_blocks(tmp_path: Path) -> None:
         [TranscriptSegment(start=0.0, end=1.5, text="Hello world")],
         output,
         "srt",
-        1,
     )
     content = output.read_text(encoding="utf-8")
     assert "1\n00:00:00,000 --> 00:00:01,500" in content
@@ -39,16 +38,15 @@ def test_write_text_transcript_contains_metadata(tmp_path: Path) -> None:
     video_file.write_text("video-data", encoding="utf-8")
     transcript_path = tmp_path / "sample.txt"
     write_text_transcript(
-        [TranscriptSegment(start=0.0, end=1.0, text="Hello world", speaker=0)],
+        [TranscriptSegment(start=0.0, end=1.0, text="Hello world", speaker="SPEAKER_00")],
         transcript_path,
         video_file,
         "https://example.com",
-        True,
-        2,
+        {"SPEAKER_00": "Chair"},
     )
     content = transcript_path.read_text(encoding="utf-8")
     assert "SHA1 Hash:" in content
-    assert "Speaker 0: Hello world" in content
+    assert "Chair: Hello world" in content
 
 
 def test_write_vtt_subtitle_file_contains_header(tmp_path: Path) -> None:
@@ -57,14 +55,13 @@ def test_write_vtt_subtitle_file_contains_header(tmp_path: Path) -> None:
         [TranscriptSegment(start=0.0, end=1.5, text="Hello world")],
         output,
         "vtt",
-        1,
     )
     content = output.read_text(encoding="utf-8")
     assert content.startswith("WEBVTT")
 
 
 def test_editable_transcript_round_trip() -> None:
-    segments = [TranscriptSegment(start=0.0, end=1.5, text="Hello world", speaker=2)]
+    segments = [TranscriptSegment(start=0.0, end=1.5, text="Hello world", speaker="Chair")]
     rendered = render_editable_transcript(segments)
     parsed = parse_editable_transcript(rendered)
     assert parsed == segments

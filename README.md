@@ -1,6 +1,6 @@
 # Video Transcriber GUI
 
-Desktop app for downloading videos, generating subtitles with Whisper, optionally adding basic speaker diarization, and exporting transcript artifacts to a chosen output directory.
+Desktop app for downloading videos, generating subtitles with Whisper, optionally adding local speaker labeling, and exporting transcript artifacts to a chosen output directory.
 
 ## What Changed
 
@@ -25,7 +25,7 @@ src/video_transcriber/
   pipeline.py       Download/transcribe/embed orchestration
   transcription.py  Whisper integration
   subtitles.py      ASS, SRT, and text transcript writers
-  diarization.py    Optional speaker diarization helpers
+  diarization.py    Optional speaker labeling helpers
   validation.py     User input validation
   utils.py          Shared pure helpers and settings storage
 tests/              Unit tests for pure and orchestration helpers
@@ -66,10 +66,10 @@ python -m venv .venv
 pip install -e .
 ```
 
-To enable speaker diarization support, install the optional extras:
+To enable speaker labeling support, install the optional extras:
 
 ```bash
-pip install -e .[diarization]
+pip install -e .[speakers]
 ```
 
 For development tools:
@@ -98,7 +98,7 @@ video-transcriber-gui
 2. Select the output directory.
 3. Choose the Whisper model size.
 4. Pick subtitle format (`ass`, `srt`, or `vtt`).
-5. Optionally enable speaker diarization, transcript text export, and subtitle embedding.
+5. Optionally enable speaker labeling, transcript text export, and subtitle embedding.
 6. Start processing, monitor the status log and progress bar, and cancel if needed.
 7. After the run completes, edit the timestamped transcript in the built-in editor and export revised text or subtitle files.
 
@@ -129,7 +129,7 @@ GitHub Actions now runs:
 ## Known Limitations
 
 - cancellation is best-effort and may finish the currently running model call before stopping
-- speaker diarization is still heuristic and best-effort
+- speaker labeling is local, heuristic, and best-effort
 - embedding depends on local `ffmpeg` capabilities
 - Whisper model downloads can be large on first run
 
@@ -139,8 +139,8 @@ GitHub Actions now runs:
   - install `ffmpeg` with your package manager and confirm `ffmpeg -version` works
 - GUI starts but transcription fails immediately
   - ensure the Whisper package is installed and the selected model can be downloaded
-- diarization fails
-  - install the optional diarization extras and try again without diarization to confirm the base pipeline works
+- speaker labeling fails
+  - install the optional speakers extras and try again without speaker labeling to confirm the base pipeline works
 
 ## License
 

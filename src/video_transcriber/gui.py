@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
-from typing import cast
+from typing import Literal, cast
 
 from .exceptions import CancelledError, VideoTranscriberError
 from .models import (
@@ -18,6 +18,7 @@ from .models import (
     JobConfig,
     JobResult,
     SubtitleFormat,
+    TranscriptSegment,
 )
 from .pipeline import ProcessingService
 from .subtitles import (
@@ -231,7 +232,11 @@ class VideoTranscriberApp:
         self.delay_var = tk.StringVar(value="0.0")
         self.model_name_var = tk.StringVar(value="base")
         self.subtitle_format_var = tk.StringVar(value="ass")
-        self.num_speakers_var = tk.StringVar(value="2")
+        self.speaker_count_mode_var = tk.StringVar(value="auto")
+        self.exact_speakers_var = tk.StringVar(value="")
+        self.min_speakers_var = tk.StringVar(value="")
+        self.max_speakers_var = tk.StringVar(value="")
+        self.audio_cleanup_preset_var = tk.StringVar(value="light")
         self.enable_diarization_var = tk.BooleanVar(value=False)
         self.save_text_var = tk.BooleanVar(value=False)
         self.embed_subtitles_var = tk.BooleanVar(value=True)
@@ -311,8 +316,7 @@ class VideoTranscriberApp:
         ttk.Label(
             card,
             text=(
-                "Choose your source, tune the output, and start a job when "
-                "everything looks right."
+                "Choose your source, tune the output, and start a job when everything looks right."
             ),
             style="Muted.TLabel",
             wraplength=360,
@@ -403,34 +407,70 @@ class VideoTranscriberApp:
         ttk.Label(card, text="Subtitle delay (seconds)", style="Field.TLabel").grid(
             row=12, column=0, sticky="w", pady=(12, 0)
         )
-        ttk.Label(card, text="Speakers", style="Field.TLabel").grid(
+        ttk.Label(card, text="Speaker count", style="Field.TLabel").grid(
             row=12, column=1, sticky="w", pady=(12, 0)
         )
         self.delay_entry = ttk.Entry(card, textvariable=self.delay_var)
         self.delay_entry.grid(row=13, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
-        self.num_speakers_entry = ttk.Entry(card, textvariable=self.num_speakers_var)
-        self.num_speakers_entry.grid(row=13, column=1, sticky="ew", pady=(6, 0))
+        self.speaker_mode_combo = ttk.Combobox(
+            card,
+            textvariable=self.speaker_count_mode_var,
+            values=["auto", "exact", "range"],
+            state="readonly",
+        )
+        self.speaker_mode_combo.grid(row=13, column=1, sticky="ew", pady=(6, 0))
+        self.speaker_mode_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._refresh_speaker_mode_ui()
+        )
 
         toggle_box = ttk.Frame(card, style="Card.TFrame")
         toggle_box.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        toggle_box.columnconfigure(1, weight=1)
+        toggle_box.columnconfigure(3, weight=1)
         ttk.Checkbutton(
             toggle_box,
-            text="Enable speaker diarization",
+            text="Enable speaker labeling",
             variable=self.enable_diarization_var,
+            command=self._refresh_speaker_mode_ui,
             style="Warm.TCheckbutton",
-        ).pack(anchor="w")
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(toggle_box, text="Exact speakers", style="Muted.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
+        self.exact_speakers_entry = ttk.Entry(toggle_box, textvariable=self.exact_speakers_var)
+        self.exact_speakers_entry.grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(4, 0))
+        ttk.Label(toggle_box, text="Minimum speakers", style="Muted.TLabel").grid(
+            row=1, column=1, sticky="w", pady=(10, 0)
+        )
+        self.min_speakers_entry = ttk.Entry(toggle_box, textvariable=self.min_speakers_var)
+        self.min_speakers_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(4, 0))
+        ttk.Label(toggle_box, text="Maximum speakers", style="Muted.TLabel").grid(
+            row=1, column=2, sticky="w", pady=(10, 0)
+        )
+        self.max_speakers_entry = ttk.Entry(toggle_box, textvariable=self.max_speakers_var)
+        self.max_speakers_entry.grid(row=2, column=2, sticky="ew", padx=(0, 8), pady=(4, 0))
+        ttk.Label(toggle_box, text="Audio cleanup", style="Muted.TLabel").grid(
+            row=1, column=3, sticky="w", pady=(10, 0)
+        )
+        self.audio_cleanup_combo = ttk.Combobox(
+            toggle_box,
+            textvariable=self.audio_cleanup_preset_var,
+            values=["off", "light", "meeting"],
+            state="readonly",
+        )
+        self.audio_cleanup_combo.grid(row=2, column=3, sticky="ew", pady=(4, 0))
         ttk.Checkbutton(
             toggle_box,
             text="Save transcript as a text file",
             variable=self.save_text_var,
             style="Warm.TCheckbutton",
-        ).pack(anchor="w", pady=(8, 0))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
         ttk.Checkbutton(
             toggle_box,
             text="Embed subtitles into video",
             variable=self.embed_subtitles_var,
             style="Warm.TCheckbutton",
-        ).pack(anchor="w", pady=(8, 0))
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self.inline_message_label = tk.Label(
             card,
@@ -573,7 +613,7 @@ class VideoTranscriberApp:
 
     def _build_transcript_tab(self) -> None:
         self.transcript_tab.columnconfigure(0, weight=1)
-        self.transcript_tab.rowconfigure(1, weight=1)
+        self.transcript_tab.rowconfigure(2, weight=1)
 
         header = ttk.Frame(self.transcript_tab, style="Card.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(10, 8))
@@ -604,6 +644,30 @@ class VideoTranscriberApp:
             style="Secondary.TButton",
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        rename_box = ttk.Frame(self.transcript_tab, style="Card.TFrame")
+        rename_box.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        rename_box.columnconfigure(0, weight=1)
+        ttk.Label(
+            rename_box,
+            text="Speaker names (one per line: SPEAKER_00 = Chair)",
+            style="Muted.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        self.speaker_names_text = scrolledtext.ScrolledText(
+            rename_box,
+            height=4,
+            wrap=tk.WORD,
+            relief=tk.FLAT,
+            bd=0,
+            bg=PALETTE["editor_bg"],
+            fg=PALETTE["text"],
+            insertbackground=PALETTE["text"],
+            highlightthickness=1,
+            highlightbackground=PALETTE["border"],
+            padx=10,
+            pady=10,
+        )
+        self.speaker_names_text.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+
         self.editor_text = scrolledtext.ScrolledText(
             self.transcript_tab,
             height=20,
@@ -618,7 +682,7 @@ class VideoTranscriberApp:
             padx=16,
             pady=16,
         )
-        self.editor_text.grid(row=1, column=0, sticky="nsew")
+        self.editor_text.grid(row=2, column=0, sticky="nsew")
         self.editor_text.bind("<<Modified>>", self._handle_editor_modified)
 
     def _apply_settings(self, settings: AppSettings) -> None:
@@ -628,9 +692,14 @@ class VideoTranscriberApp:
         self.save_text_var.set(settings.save_text)
         self.embed_subtitles_var.set(settings.embed_subtitles)
         self.enable_diarization_var.set(settings.enable_diarization)
-        self.num_speakers_var.set(settings.num_speakers)
+        self.speaker_count_mode_var.set(settings.speaker_count_mode)
+        self.exact_speakers_var.set(settings.exact_speakers)
+        self.min_speakers_var.set(settings.min_speakers)
+        self.max_speakers_var.set(settings.max_speakers)
+        self.audio_cleanup_preset_var.set(settings.audio_cleanup_preset)
         self.model_name_var.set(settings.model_name)
         self.subtitle_format_var.set(settings.subtitle_format)
+        self._refresh_speaker_mode_ui()
         self._refresh_placeholders()
 
     def _card(
@@ -718,6 +787,20 @@ class VideoTranscriberApp:
             else "Download, transcribe, and polish a video from the web in one calm workspace."
         )
         self._refresh_placeholders()
+
+    def _refresh_speaker_mode_ui(self) -> None:
+        mode = self.speaker_count_mode_var.get()
+        speakers_enabled = self.enable_diarization_var.get()
+        exact_state = tk.NORMAL if speakers_enabled and mode == "exact" else tk.DISABLED
+        range_state = tk.NORMAL if speakers_enabled and mode == "range" else tk.DISABLED
+        combo_state = "readonly"
+        if hasattr(self, "exact_speakers_entry"):
+            self.exact_speakers_entry.configure(state=exact_state)
+            self.min_speakers_entry.configure(state=range_state)
+            self.max_speakers_entry.configure(state=range_state)
+            self.audio_cleanup_combo.configure(
+                state=combo_state if speakers_enabled else tk.DISABLED
+            )
 
     def _start_processing(self) -> None:
         if self.active_worker and self.active_worker.is_alive():
@@ -808,6 +891,7 @@ class VideoTranscriberApp:
                     )
                     self._update_result_summary(payload)
                     self._set_editor_contents(render_editable_transcript(payload.segments))
+                    self._set_speaker_name_map(payload.segments)
                     self.editor_status_var.set(
                         "Loaded generated transcript. Make edits and export when ready."
                     )
@@ -846,8 +930,10 @@ class VideoTranscriberApp:
             return "Loading model"
         if "transcription" in lowered or "transcrib" in lowered:
             return "Transcribing"
-        if "diarization" in lowered:
-            return "Diarizing"
+        if "speaker labeling" in lowered:
+            return "Speaker labeling"
+        if "audio" in lowered:
+            return "Preparing audio"
         if "embed" in lowered:
             return "Embedding subtitles"
         if "subtitle file created" in lowered:
@@ -867,16 +953,25 @@ class VideoTranscriberApp:
             self.input_entry,
             self.output_entry,
             self.delay_entry,
-            self.num_speakers_entry,
+            self.exact_speakers_entry,
+            self.min_speakers_entry,
+            self.max_speakers_entry,
         ]:
             widget.configure(state=field_state)
-        for widget in [self.model_name_combo, self.subtitle_format_combo]:
+        for widget in [
+            self.model_name_combo,
+            self.subtitle_format_combo,
+            self.speaker_mode_combo,
+            self.audio_cleanup_combo,
+        ]:
             widget.configure(state=combo_state)
         input_browse_state = tk.DISABLED
         if not is_running and self._current_input_mode() == "file":
             input_browse_state = tk.NORMAL
         self.input_browse_button.configure(state=input_browse_state)
         self.output_browse_button.configure(state=field_state)
+        if not is_running:
+            self._refresh_speaker_mode_ui()
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-Return>", self._handle_start_shortcut)
@@ -1001,10 +1096,10 @@ class VideoTranscriberApp:
             self.workspace_notebook.select(self.transcript_tab)
             return
 
+        speaker_names = self._parse_speaker_name_map()
         export_format = self.export_format_var.get()
         base_name = self.current_result.video_file.stem + "_edited"
         output_dir = Path(self.output_dir_var.get()).expanduser()
-        speaker_count = max((segment.speaker or 0) for segment in segments) + 1 if segments else 1
 
         if export_format == "txt":
             export_path = output_dir / f"{base_name}.txt"
@@ -1013,8 +1108,7 @@ class VideoTranscriberApp:
                 export_path,
                 self.current_result.video_file,
                 None,
-                any(segment.speaker is not None for segment in segments),
-                speaker_count,
+                speaker_names,
             )
         else:
             export_path = output_dir / f"{base_name}.{export_format}"
@@ -1022,7 +1116,7 @@ class VideoTranscriberApp:
                 segments,
                 export_path,
                 cast(SubtitleFormat, export_format),
-                speaker_count,
+                speaker_names,
             )
 
         self._append_log(f"Edited transcript exported: {export_path}")
@@ -1032,9 +1126,11 @@ class VideoTranscriberApp:
     def _reset_transcript_editor(self) -> None:
         if self.current_result is None:
             self._set_editor_contents("")
+            self._set_speaker_name_map([])
             self.editor_status_var.set("Transcript editor is empty")
             return
         self._set_editor_contents(render_editable_transcript(self.current_result.segments))
+        self._set_speaker_name_map(self.current_result.segments)
         self.editor_status_var.set("Transcript reset to the original generated version")
         self._set_inline_message("Transcript editor reset to the generated output.", tone="muted")
 
@@ -1052,7 +1148,15 @@ class VideoTranscriberApp:
             save_text=self.save_text_var.get(),
             embed_subtitles=self.embed_subtitles_var.get(),
             enable_diarization=self.enable_diarization_var.get(),
-            num_speakers=int(self.num_speakers_var.get()),
+            speaker_count_mode=cast(
+                Literal["auto", "exact", "range"], self.speaker_count_mode_var.get()
+            ),
+            exact_speakers=self._parse_optional_int(self.exact_speakers_var.get()),
+            min_speakers=self._parse_optional_int(self.min_speakers_var.get()),
+            max_speakers=self._parse_optional_int(self.max_speakers_var.get()),
+            audio_cleanup_preset=cast(
+                Literal["off", "light", "meeting"], self.audio_cleanup_preset_var.get()
+            ),
             model_name=self.model_name_var.get(),
             subtitle_format=subtitle_format,
         )
@@ -1065,11 +1169,47 @@ class VideoTranscriberApp:
             save_text=self.save_text_var.get(),
             embed_subtitles=self.embed_subtitles_var.get(),
             enable_diarization=self.enable_diarization_var.get(),
-            num_speakers=self.num_speakers_var.get(),
+            speaker_count_mode=cast(
+                Literal["auto", "exact", "range"], self.speaker_count_mode_var.get()
+            ),
+            exact_speakers=self.exact_speakers_var.get(),
+            min_speakers=self.min_speakers_var.get(),
+            max_speakers=self.max_speakers_var.get(),
+            audio_cleanup_preset=cast(
+                Literal["off", "light", "meeting"], self.audio_cleanup_preset_var.get()
+            ),
             model_name=self.model_name_var.get(),
             subtitle_format=self._current_subtitle_format(),
         )
         save_settings(settings)
+
+    def _parse_optional_int(self, raw_value: str) -> int | None:
+        value = raw_value.strip()
+        if not value:
+            return None
+        return int(value)
+
+    def _set_speaker_name_map(self, segments: list[TranscriptSegment]) -> None:
+        speaker_ids = sorted(
+            {segment.speaker for segment in segments if segment.speaker is not None}
+        )
+        self.speaker_names_text.delete("1.0", tk.END)
+        if speaker_ids:
+            lines = [f"{speaker_id} = {speaker_id}" for speaker_id in speaker_ids]
+            self.speaker_names_text.insert("1.0", "\n".join(lines))
+
+    def _parse_speaker_name_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for raw_line in self.speaker_names_text.get("1.0", tk.END).splitlines():
+            line = raw_line.strip()
+            if not line or "=" not in line:
+                continue
+            speaker_id, display_name = line.split("=", maxsplit=1)
+            speaker_id = speaker_id.strip()
+            display_name = display_name.strip()
+            if speaker_id and display_name:
+                mapping[speaker_id] = display_name
+        return mapping
 
     def _append_log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")

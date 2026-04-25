@@ -30,8 +30,44 @@ def test_validate_job_config_rejects_invalid_speaker_count(tmp_path: Path) -> No
         input_mode="file",
         input_value=str(video_file),
         output_dir=tmp_path,
-        num_speakers=0,
+        enable_diarization=True,
+        speaker_count_mode="exact",
+        exact_speakers=0,
     )
+    with pytest.raises(ValidationError):
+        validate_job_config(config)
+
+
+def test_validate_job_config_accepts_speaker_range(tmp_path: Path) -> None:
+    video_file = tmp_path / "video.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        enable_diarization=True,
+        speaker_count_mode="range",
+        min_speakers=2,
+        max_speakers=4,
+    )
+
+    validated = validate_job_config(config)
+
+    assert validated.min_speakers == 2
+    assert validated.max_speakers == 4
+
+
+def test_validate_job_config_rejects_invalid_cleanup_preset(tmp_path: Path) -> None:
+    video_file = tmp_path / "video.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        audio_cleanup_preset="light",  # type: ignore[arg-type]
+    )
+    config.audio_cleanup_preset = "invalid"  # type: ignore[assignment]
+
     with pytest.raises(ValidationError):
         validate_job_config(config)
 

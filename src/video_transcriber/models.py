@@ -9,6 +9,8 @@ from typing import Literal
 
 InputMode = Literal["url", "file"]
 SubtitleFormat = Literal["ass", "srt", "vtt"]
+SpeakerCountMode = Literal["auto", "exact", "range"]
+AudioCleanupPreset = Literal["off", "light", "meeting"]
 
 
 @dataclass(slots=True)
@@ -20,7 +22,11 @@ class JobConfig:
     save_text: bool = False
     embed_subtitles: bool = True
     enable_diarization: bool = False
-    num_speakers: int = 2
+    speaker_count_mode: SpeakerCountMode = "auto"
+    exact_speakers: int | None = None
+    min_speakers: int | None = None
+    max_speakers: int | None = None
+    audio_cleanup_preset: AudioCleanupPreset = "light"
     model_name: str = "base"
     subtitle_format: SubtitleFormat = "ass"
 
@@ -30,14 +36,14 @@ class TranscriptSegment:
     start: float
     end: float
     text: str
-    speaker: int | None = None
+    speaker: str | None = None
 
 
 @dataclass(slots=True)
 class SpeakerSegment:
     start: float
     end: float
-    speaker: int
+    speaker: str
 
 
 @dataclass(slots=True)
@@ -57,7 +63,11 @@ class AppSettings:
     save_text: bool = False
     embed_subtitles: bool = True
     enable_diarization: bool = False
-    num_speakers: str = "2"
+    speaker_count_mode: SpeakerCountMode = "auto"
+    exact_speakers: str = ""
+    min_speakers: str = ""
+    max_speakers: str = ""
+    audio_cleanup_preset: AudioCleanupPreset = "light"
     model_name: str = "base"
     subtitle_format: SubtitleFormat = "ass"
 

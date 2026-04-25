@@ -7,7 +7,9 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
+from .audio_preprocess import extract_clean_audio
 from .diarization import AudioDiarizer
 from .download import download_video
 from .exceptions import CancelledError, DependencyError, ProcessingError
@@ -20,10 +22,14 @@ LOGGER = logging.getLogger(__name__)
 EventCallback = Callable[[str, str, float | None], None]
 
 
+class Transcriber(Protocol):
+    def transcribe(self, video_file: Path, model_name: str) -> list[TranscriptSegment]: ...
+
+
 class ProcessingService:
     """Run download, transcription, subtitle generation, and embedding."""
 
-    def __init__(self, transcriber: WhisperTranscriber | None = None) -> None:
+    def __init__(self, transcriber: Transcriber | None = None) -> None:
         self.transcriber = transcriber or WhisperTranscriber()
 
     def process(
@@ -75,15 +81,18 @@ class ProcessingService:
             ]
 
         if config.enable_diarization:
-            self._emit(callback, "status", "Running speaker diarization", 72.0)
-            speaker_segments = self._run_diarization(video_file, config.num_speakers)
+            self._emit(callback, "status", "Preparing audio for speaker labeling", 70.0)
+            speaker_segments = self._run_diarization(video_file, config)
+            self._emit(callback, "status", "Applying speaker labels", 78.0)
             segments = apply_speakers(segments, speaker_segments)
-            self._emit(callback, "status", "Speaker diarization complete", 82.0)
+            segments = smooth_speaker_segments(segments)
+            segments = merge_adjacent_same_speaker_segments(segments)
+            self._emit(callback, "status", "Speaker labeling complete", 82.0)
             self._check_cancelled(cancellation_token)
 
         base_name = sanitize_filename(video_file.stem, "transcript")
         subtitle_file = config.output_dir / f"{base_name}.{config.subtitle_format}"
-        write_subtitle_file(segments, subtitle_file, config.subtitle_format, config.num_speakers)
+        write_subtitle_file(segments, subtitle_file, config.subtitle_format)
         self._emit(callback, "status", f"Subtitle file created: {subtitle_file.name}", 90.0)
         self._check_cancelled(cancellation_token)
 
@@ -95,8 +104,6 @@ class ProcessingService:
                 text_file,
                 video_file,
                 source_url,
-                config.enable_diarization,
-                config.num_speakers,
             )
             self._emit(callback, "status", f"Transcript file created: {text_file.name}", 94.0)
             self._check_cancelled(cancellation_token)
@@ -132,8 +139,8 @@ class ProcessingService:
             return None
 
         transcription_time = duration * 0.1
-        diarization_time = duration * 0.05 if enable_diarization else 0.0
-        return transcription_time + diarization_time + 5.0
+        speaker_labeling_time = duration * 0.08 if enable_diarization else 0.0
+        return transcription_time + speaker_labeling_time + 5.0
 
     def embed_subtitles(self, video_file: Path, subtitle_file: Path, output_dir: Path) -> Path:
         """Embed subtitles into a video file."""
@@ -166,24 +173,16 @@ class ProcessingService:
         if shutil.which("ffmpeg") is None:
             raise DependencyError("ffmpeg is not installed or is not on PATH.")
 
-    def _run_diarization(self, video_file: Path, num_speakers: int) -> list[SpeakerSegment]:
-        try:
-            import ffmpeg  # pyright: ignore[reportMissingImports]
-        except ImportError as exc:
-            raise DependencyError("ffmpeg-python is not installed.") from exc
-
-        diarizer = AudioDiarizer(num_speakers=num_speakers)
+    def _run_diarization(self, video_file: Path, config: JobConfig) -> list[SpeakerSegment]:
+        diarizer = AudioDiarizer(
+            speaker_count_mode=config.speaker_count_mode,
+            exact_speakers=config.exact_speakers,
+            min_speakers=config.min_speakers,
+            max_speakers=config.max_speakers,
+        )
         with tempfile.TemporaryDirectory(prefix="video-transcriber-") as temp_dir:
             audio_path = Path(temp_dir) / f"{video_file.stem}_audio.wav"
-            try:
-                (
-                    ffmpeg.input(str(video_file))
-                    .output(str(audio_path), acodec="pcm_s16le", ac=1, ar=16000)
-                    .overwrite_output()
-                    .run(capture_stdout=True, capture_stderr=True)
-                )
-            except Exception as exc:  # pragma: no cover - depends on ffmpeg runtime
-                raise ProcessingError(f"Failed to extract audio for diarization: {exc}") from exc
+            extract_clean_audio(video_file, audio_path, config.audio_cleanup_preset)
             return diarizer.process_audio(audio_path)
 
     @staticmethod
@@ -205,17 +204,24 @@ class ProcessingService:
 def apply_speakers(
     segments: list[TranscriptSegment], speaker_segments: list[SpeakerSegment]
 ) -> list[TranscriptSegment]:
-    """Attach diarization speaker labels to transcript segments."""
+    """Attach speaker labels to transcript segments using largest overlap."""
     if not speaker_segments:
         return segments
 
     annotated: list[TranscriptSegment] = []
     for segment in segments:
         speaker = None
+        best_overlap = 0.0
         for speaker_segment in speaker_segments:
-            if segment.start >= speaker_segment.start and segment.start < speaker_segment.end:
+            overlap = overlap_seconds(
+                segment.start,
+                segment.end,
+                speaker_segment.start,
+                speaker_segment.end,
+            )
+            if overlap > best_overlap:
+                best_overlap = overlap
                 speaker = speaker_segment.speaker
-                break
         annotated.append(
             TranscriptSegment(
                 start=segment.start,
@@ -225,3 +231,63 @@ def apply_speakers(
             )
         )
     return annotated
+
+
+def overlap_seconds(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
+    """Return the overlap between two time ranges."""
+    return max(0.0, min(a_end, b_end) - max(a_start, b_start))
+
+
+def smooth_speaker_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    """Smooth isolated short speaker flips between matching neighbors."""
+    if len(segments) < 3:
+        return segments
+
+    smoothed = list(segments)
+    for index in range(1, len(smoothed) - 1):
+        previous = smoothed[index - 1]
+        current = smoothed[index]
+        following = smoothed[index + 1]
+        short_duration = current.end - current.start <= 1.5
+        nearby = current.start - previous.end <= 0.75 and following.start - current.end <= 0.75
+        if (
+            short_duration
+            and nearby
+            and previous.speaker is not None
+            and previous.speaker == following.speaker
+            and current.speaker != previous.speaker
+        ):
+            smoothed[index] = TranscriptSegment(
+                start=current.start,
+                end=current.end,
+                text=current.text,
+                speaker=previous.speaker,
+            )
+    return smoothed
+
+
+def merge_adjacent_same_speaker_segments(
+    segments: list[TranscriptSegment], max_gap_seconds: float = 0.9
+) -> list[TranscriptSegment]:
+    """Merge adjacent transcript segments that clearly belong together."""
+    if not segments:
+        return []
+
+    merged = [segments[0]]
+    for segment in segments[1:]:
+        previous = merged[-1]
+        gap = segment.start - previous.end
+        if (
+            previous.speaker == segment.speaker
+            and previous.speaker is not None
+            and gap <= max_gap_seconds
+        ):
+            merged[-1] = TranscriptSegment(
+                start=previous.start,
+                end=segment.end,
+                text=f"{previous.text.rstrip()} {segment.text.lstrip()}".strip(),
+                speaker=previous.speaker,
+            )
+            continue
+        merged.append(segment)
+    return merged
