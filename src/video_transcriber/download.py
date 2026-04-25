@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .exceptions import CancelledError, DependencyError, ProcessingError
 from .models import CancellationToken
@@ -41,14 +42,7 @@ def download_video(
         elif status == "finished":
             callback("download", "Download complete", 100.0)
 
-    options = {
-        "outtmpl": str(template),
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
-        "progress_hooks": [progress_hook],
-        "restrictfilenames": True,
-        "noplaylist": True,
-    }
+    options = _build_download_options(url, template, progress_hook)
 
     with yt_dlp.YoutubeDL(options) as ydl:  # pyright: ignore[reportArgumentType]
         try:
@@ -92,6 +86,30 @@ def _candidate_paths(ydl: object, info: dict[str, object]) -> list[Path]:
             deduped.append(path)
             seen.add(path)
     return deduped
+
+
+def _build_download_options(
+    url: str,
+    template: Path,
+    progress_hook: Callable[[dict[str, object]], None],
+) -> dict[str, object]:
+    options: dict[str, object] = {
+        "outtmpl": str(template),
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "progress_hooks": [progress_hook],
+        "restrictfilenames": True,
+        "noplaylist": True,
+    }
+    if _is_youtube_url(url):
+        options["remote_components"] = ["ejs:github"]
+    return options
+
+
+def _is_youtube_url(url: str) -> bool:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    return hostname in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
 
 def _as_float(value: object, default: float | None = None) -> float | None:

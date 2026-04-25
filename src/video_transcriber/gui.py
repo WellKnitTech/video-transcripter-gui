@@ -8,39 +8,53 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Literal, cast
+from typing import cast
 
 from .exceptions import CancelledError, SettingsError, VideoTranscriberError
+from .gui_events import (
+    QUEUE_ERROR,
+    QUEUE_EXPORT_ERROR,
+    QUEUE_EXPORT_RESULT,
+    QUEUE_RESULT,
+    GuiEventHandlers,
+    GuiEventPoller,
+    QueueEvent,
+)
+from .gui_logic import (
+    GuiFormData,
+    form_data_to_job_config,
+    form_data_to_settings,
+    friendly_status,
+    settings_to_form_data,
+)
 from .gui_theme import PALETTE, PLACEHOLDER_TEXT
 from .gui_theme import configure_styles as configure_gui_styles
-from .gui_views import build_ui
+from .gui_transcript_editor import (
+    TranscriptEditorDocument,
+    TranscriptExportRequest,
+    build_export_request,
+    editor_status_for_text,
+    empty_editor_document,
+    generated_editor_document,
+    reset_editor_document,
+    write_edited_transcript_export,
+)
+from .gui_views import GuiViewBindings, GuiViewState, GuiWidgets, build_ui
 from .models import (
     AppSettings,
+    AudioCleanupPreset,
     CancellationToken,
     InputMode,
     JobConfig,
     JobResult,
+    SpeakerCountMode,
     SubtitleFormat,
-    TranscriptSegment,
 )
 from .pipeline import ProcessingService
-from .subtitles import (
-    parse_editable_transcript,
-    render_editable_transcript,
-    write_subtitle_file,
-    write_text_transcript,
-)
 from .utils import default_output_dir, load_settings, open_directory, save_settings
 from .validation import validate_job_config
 
 LOGGER = logging.getLogger(__name__)
-QUEUE_PROGRESS = "progress"
-QUEUE_RESULT = "result"
-QUEUE_ERROR = "error"
-QUEUE_EXPORT_RESULT = "export_result"
-QUEUE_EXPORT_ERROR = "export_error"
-
-QueuePayload = tuple[str, str, float | None] | JobResult | Path | Exception
 
 
 class VideoTranscriberApp:
@@ -54,7 +68,7 @@ class VideoTranscriberApp:
         self.root.configure(bg=PALETTE["bg"])
 
         self.processing_service = ProcessingService()
-        self.event_queue: queue.Queue[tuple[str, QueuePayload]] = queue.Queue()
+        self.event_queue: queue.Queue[QueueEvent] = queue.Queue()
         self.current_result: JobResult | None = None
         self.active_worker: threading.Thread | None = None
         self.active_export_worker: threading.Thread | None = None
@@ -62,6 +76,7 @@ class VideoTranscriberApp:
         self._close_requested = False
         self.settings = load_settings()
         self._entry_placeholders: dict[ttk.Entry, dict[str, object]] = {}
+        self.widgets: GuiWidgets
         self.input_entry: ttk.Entry
         self.output_entry: ttk.Entry
         self.delay_entry: ttk.Entry
@@ -93,14 +108,105 @@ class VideoTranscriberApp:
 
         configure_gui_styles(self.root)
         self._init_state_vars()
-        build_ui(self)
+        self.widgets = build_ui(self.root, self._view_state(), self._view_bindings())
+        self._assign_widget_handles(self.widgets)
+        self._install_placeholder(self.input_entry, self.input_var, PLACEHOLDER_TEXT["url"])
+        self._install_placeholder(
+            self.output_entry, self.output_dir_var, PLACEHOLDER_TEXT["output"]
+        )
+        self.event_poller = GuiEventPoller(self.event_queue, self._event_handlers())
         self._apply_settings(self.settings)
         self._refresh_input_mode_ui()
         self._reset_result_summary()
+        self._apply_editor_document(empty_editor_document())
         self._bind_shortcuts()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._poll_events)
+
+    def _view_state(self) -> GuiViewState:
+        return GuiViewState(
+            hero_hint_var=self.hero_hint_var,
+            status_var=self.status_var,
+            input_mode_var=self.input_mode_var,
+            input_var=self.input_var,
+            output_dir_var=self.output_dir_var,
+            delay_var=self.delay_var,
+            model_name_var=self.model_name_var,
+            subtitle_format_var=self.subtitle_format_var,
+            speaker_count_mode_var=self.speaker_count_mode_var,
+            exact_speakers_var=self.exact_speakers_var,
+            min_speakers_var=self.min_speakers_var,
+            max_speakers_var=self.max_speakers_var,
+            audio_cleanup_preset_var=self.audio_cleanup_preset_var,
+            enable_diarization_var=self.enable_diarization_var,
+            save_text_var=self.save_text_var,
+            embed_subtitles_var=self.embed_subtitles_var,
+            export_format_var=self.export_format_var,
+            inline_message_var=self.inline_message_var,
+            mode_hint_var=self.mode_hint_var,
+            progress_caption_var=self.progress_caption_var,
+            summary_title_var=self.summary_title_var,
+            summary_body_var=self.summary_body_var,
+            editor_status_var=self.editor_status_var,
+        )
+
+    def _view_bindings(self) -> GuiViewBindings:
+        return GuiViewBindings(
+            refresh_input_mode_ui=self._refresh_input_mode_ui,
+            browse_input=self._browse_input,
+            browse_output_dir=self._browse_output_dir,
+            refresh_speaker_mode_ui=self._refresh_speaker_mode_ui,
+            start_processing=self._start_processing,
+            cancel_processing=self._cancel_processing,
+            open_output_dir=self._open_output_dir,
+            focus_transcript_tab=self._focus_transcript_tab,
+            reset_transcript_editor=self._reset_transcript_editor,
+            export_edited_transcript=self._export_edited_transcript,
+            handle_editor_modified=self._handle_editor_modified,
+        )
+
+    def _assign_widget_handles(self, widgets: GuiWidgets) -> None:
+        self.input_entry = widgets.input_entry
+        self.output_entry = widgets.output_entry
+        self.delay_entry = widgets.delay_entry
+        self.exact_speakers_entry = widgets.exact_speakers_entry
+        self.min_speakers_entry = widgets.min_speakers_entry
+        self.max_speakers_entry = widgets.max_speakers_entry
+        self.input_browse_button = widgets.input_browse_button
+        self.output_browse_button = widgets.output_browse_button
+        self.process_button = widgets.process_button
+        self.cancel_button = widgets.cancel_button
+        self.open_output_button = widgets.open_output_button
+        self.model_name_combo = widgets.model_name_combo
+        self.subtitle_format_combo = widgets.subtitle_format_combo
+        self.speaker_mode_combo = widgets.speaker_mode_combo
+        self.audio_cleanup_combo = widgets.audio_cleanup_combo
+        self.export_format_combo = widgets.export_format_combo
+        self.reset_editor_button = widgets.reset_editor_button
+        self.export_button = widgets.export_button
+        self.inline_message_label = widgets.inline_message_label
+        self.progress_bar = widgets.progress_bar
+        self.workspace_notebook = widgets.workspace_notebook
+        self.overview_tab = widgets.overview_tab
+        self.logs_tab = widgets.logs_tab
+        self.transcript_tab = widgets.transcript_tab
+        self.result_summary_label = widgets.result_summary_label
+        self.log_text = widgets.log_text
+        self.speaker_names_text = widgets.speaker_names_text
+        self.editor_text = widgets.editor_text
+
+    def _event_handlers(self) -> GuiEventHandlers:
+        return GuiEventHandlers(
+            on_progress=self._handle_progress_event,
+            on_result=self._handle_result_event,
+            on_error=self._handle_error_event,
+            on_export_result=self._handle_export_result_event,
+            on_export_error=self._handle_export_error_event,
+        )
+
+    def _focus_transcript_tab(self) -> None:
+        self.workspace_notebook.select(self.transcript_tab)
 
     def _init_state_vars(self) -> None:
         self.status_var = tk.StringVar(value="Ready to transcribe")
@@ -139,19 +245,20 @@ class VideoTranscriberApp:
         self.editor_status_var = tk.StringVar(value="Transcript editor is empty")
 
     def _apply_settings(self, settings: AppSettings) -> None:
-        self.input_mode_var.set(settings.input_mode)
-        self.output_dir_var.set(settings.output_dir or str(default_output_dir()))
-        self.delay_var.set(settings.delay)
-        self.save_text_var.set(settings.save_text)
-        self.embed_subtitles_var.set(settings.embed_subtitles)
-        self.enable_diarization_var.set(settings.enable_diarization)
-        self.speaker_count_mode_var.set(settings.speaker_count_mode)
-        self.exact_speakers_var.set(settings.exact_speakers)
-        self.min_speakers_var.set(settings.min_speakers)
-        self.max_speakers_var.set(settings.max_speakers)
-        self.audio_cleanup_preset_var.set(settings.audio_cleanup_preset)
-        self.model_name_var.set(settings.model_name)
-        self.subtitle_format_var.set(settings.subtitle_format)
+        form_data = settings_to_form_data(settings, default_output_dir())
+        self.input_mode_var.set(form_data.input_mode)
+        self.output_dir_var.set(form_data.output_dir)
+        self.delay_var.set(form_data.delay)
+        self.save_text_var.set(form_data.save_text)
+        self.embed_subtitles_var.set(form_data.embed_subtitles)
+        self.enable_diarization_var.set(form_data.enable_diarization)
+        self.speaker_count_mode_var.set(form_data.speaker_count_mode)
+        self.exact_speakers_var.set(form_data.exact_speakers)
+        self.min_speakers_var.set(form_data.min_speakers)
+        self.max_speakers_var.set(form_data.max_speakers)
+        self.audio_cleanup_preset_var.set(form_data.audio_cleanup_preset)
+        self.model_name_var.set(form_data.model_name)
+        self.subtitle_format_var.set(form_data.subtitle_format)
         self._refresh_speaker_mode_ui()
         self._refresh_placeholders()
 
@@ -235,7 +342,7 @@ class VideoTranscriberApp:
         self.progress_bar["value"] = 0
         self._append_log("Starting job")
         self._reset_result_summary()
-        self._set_editor_contents("")
+        self._apply_editor_document(empty_editor_document())
         self.workspace_notebook.select(self.overview_tab)
 
         self.active_worker = threading.Thread(target=self._run_job, args=(config,), daemon=True)
@@ -268,106 +375,84 @@ class VideoTranscriberApp:
         self.cancel_button.configure(state=tk.DISABLED)
 
     def _queue_event(self, event_type: str, message: str, progress: float | None) -> None:
-        self.event_queue.put((QUEUE_PROGRESS, (event_type, message, progress)))
+        self.event_poller.queue_progress(event_type, message, progress)
 
     def _poll_events(self) -> None:
-        try:
-            while True:
-                event_type, payload = self.event_queue.get_nowait()
-                if event_type == QUEUE_PROGRESS:
-                    _kind, message, progress = cast(tuple[str, str, float | None], payload)
-                    self.status_var.set(self._friendly_status(message))
-                    self.progress_caption_var.set(message)
-                    self._append_log(message)
-                    if progress is not None:
-                        self.progress_bar["value"] = progress
-                elif event_type == QUEUE_RESULT and isinstance(payload, JobResult):
-                    self.active_worker = None
-                    self.current_result = payload
-                    self._set_running_state(False)
-                    self.progress_bar["value"] = 100
-                    self.status_var.set("Completed")
-                    self.progress_caption_var.set("Your outputs are ready below")
-                    self._set_inline_message(
-                        (
-                            "Everything finished cleanly. Review the files in the "
-                            "overview or refine the transcript in the editor."
-                        ),
-                        tone="success",
-                    )
-                    self._update_result_summary(payload)
-                    self._set_editor_contents(render_editable_transcript(payload.segments))
-                    self._set_speaker_name_map(payload.segments)
-                    self.editor_status_var.set(
-                        "Loaded generated transcript. Make edits and export when ready."
-                    )
-                    self.workspace_notebook.select(self.transcript_tab)
-                    if self._close_requested:
-                        self._finish_close_when_idle()
-                elif event_type == QUEUE_ERROR and isinstance(payload, Exception):
-                    self.active_worker = None
-                    self._set_running_state(False)
-                    if isinstance(payload, CancelledError):
-                        self.status_var.set("Cancelled")
-                        self.progress_bar["value"] = 0
-                        self.progress_caption_var.set("The active job was cancelled")
-                        self._append_log(str(payload))
-                        self._set_inline_message(
-                            (
-                                "The job was cancelled before completion. Adjust "
-                                "settings and start again when ready."
-                            ),
-                            tone="warning",
-                        )
-                        if self._close_requested:
-                            self._finish_close_when_idle()
-                    else:
-                        self._close_requested = False
-                        self.status_var.set("Failed")
-                        self.progress_caption_var.set("Something went wrong during processing")
-                        message = str(payload)
-                        self._append_log(f"Error: {message}")
-                        self._set_inline_message(message, tone="danger")
-                        messagebox.showerror("Processing Error", message)
-                elif event_type == QUEUE_EXPORT_RESULT and isinstance(payload, Path):
-                    self.active_export_worker = None
-                    self._set_export_state(False)
-                    self._append_log(f"Edited transcript exported: {payload}")
-                    self.editor_status_var.set(f"Last export: {payload.name}")
-                    self._set_inline_message(
-                        f"Saved edited transcript to {payload}", tone="success"
-                    )
-                elif event_type == QUEUE_EXPORT_ERROR and isinstance(payload, Exception):
-                    self.active_export_worker = None
-                    self._set_export_state(False)
-                    message = str(payload)
-                    self._append_log(f"Export error: {message}")
-                    self.editor_status_var.set("Export failed")
-                    self._set_inline_message(message, tone="danger")
-                    messagebox.showerror("Export Error", message)
-        except queue.Empty:
-            pass
-        finally:
-            if self.root.winfo_exists():
-                self.root.after(100, self._poll_events)
+        self.event_poller.poll()
+        if self.root.winfo_exists():
+            self.root.after(100, self._poll_events)
+
+    def _handle_progress_event(self, payload: tuple[str, str, float | None]) -> None:
+        _kind, message, progress = payload
+        self.status_var.set(self._friendly_status(message))
+        self.progress_caption_var.set(message)
+        self._append_log(message)
+        if progress is not None:
+            self.progress_bar["value"] = progress
+
+    def _handle_result_event(self, payload: JobResult) -> None:
+        self.active_worker = None
+        self.current_result = payload
+        self._set_running_state(False)
+        self.progress_bar["value"] = 100
+        self.status_var.set("Completed")
+        self.progress_caption_var.set("Your outputs are ready below")
+        self._set_inline_message(
+            (
+                "Everything finished cleanly. Review the files in the overview "
+                "or refine the transcript in the editor."
+            ),
+            tone="success",
+        )
+        self._update_result_summary(payload)
+        self._apply_editor_document(generated_editor_document(payload))
+        self.workspace_notebook.select(self.transcript_tab)
+        if self._close_requested:
+            self._finish_close_when_idle()
+
+    def _handle_error_event(self, payload: Exception) -> None:
+        self.active_worker = None
+        self._set_running_state(False)
+        if isinstance(payload, CancelledError):
+            self.status_var.set("Cancelled")
+            self.progress_bar["value"] = 0
+            self.progress_caption_var.set("The active job was cancelled")
+            self._append_log(str(payload))
+            self._set_inline_message(
+                "The job was cancelled before completion. Adjust settings and start again "
+                "when ready.",
+                tone="warning",
+            )
+            if self._close_requested:
+                self._finish_close_when_idle()
+            return
+
+        self._close_requested = False
+        self.status_var.set("Failed")
+        self.progress_caption_var.set("Something went wrong during processing")
+        message = str(payload)
+        self._append_log(f"Error: {message}")
+        self._set_inline_message(message, tone="danger")
+        messagebox.showerror("Processing Error", message)
+
+    def _handle_export_result_event(self, payload: Path) -> None:
+        self.active_export_worker = None
+        self._set_export_state(False)
+        self._append_log(f"Edited transcript exported: {payload}")
+        self.editor_status_var.set(f"Last export: {payload.name}")
+        self._set_inline_message(f"Saved edited transcript to {payload}", tone="success")
+
+    def _handle_export_error_event(self, payload: Exception) -> None:
+        self.active_export_worker = None
+        self._set_export_state(False)
+        message = str(payload)
+        self._append_log(f"Export error: {message}")
+        self.editor_status_var.set("Export failed")
+        self._set_inline_message(message, tone="danger")
+        messagebox.showerror("Export Error", message)
 
     def _friendly_status(self, message: str) -> str:
-        lowered = message.lower()
-        if "download" in lowered:
-            return "Downloading"
-        if "whisper model" in lowered:
-            return "Loading model"
-        if "transcription" in lowered or "transcrib" in lowered:
-            return "Transcribing"
-        if "speaker labeling" in lowered:
-            return "Speaker labeling"
-        if "audio" in lowered:
-            return "Preparing audio"
-        if "embed" in lowered:
-            return "Embedding subtitles"
-        if "subtitle file created" in lowered:
-            return "Generating outputs"
-        return message
+        return friendly_status(message)
 
     def _set_running_state(self, is_running: bool) -> None:
         self.process_button.configure(state=tk.DISABLED if is_running else tk.NORMAL)
@@ -515,138 +600,60 @@ class VideoTranscriberApp:
             open_directory(path)
 
     def _export_edited_transcript(self) -> None:
-        if self.current_result is None:
-            self._set_inline_message(
-                "Run a job first so the transcript editor has content to export.",
-                tone="warning",
-            )
-            self.workspace_notebook.select(self.transcript_tab)
-            return
-
         if self.active_export_worker and self.active_export_worker.is_alive():
             self._set_inline_message("An export is already running.", tone="warning")
             return
 
         try:
-            segments = parse_editable_transcript(self.editor_text.get("1.0", tk.END))
+            request = build_export_request(
+                self.current_result,
+                self.editor_text.get("1.0", tk.END),
+                self.speaker_names_text.get("1.0", tk.END),
+                self.export_format_var.get(),
+                self._value_without_placeholder(self.output_entry, self.output_dir_var),
+                default_output_dir(),
+            )
         except ValueError as exc:
             self._set_inline_message(str(exc), tone="danger")
             self.workspace_notebook.select(self.transcript_tab)
             return
-
-        speaker_names = self._parse_speaker_name_map()
-        export_format = self.export_format_var.get()
-        base_name = self.current_result.video_file.stem + "_edited"
-        output_dir = Path(
-            self._value_without_placeholder(self.output_entry, self.output_dir_var)
-            or default_output_dir()
-        ).expanduser()
-        export_path = output_dir / f"{base_name}.{export_format}"
+        except RuntimeError as exc:
+            self._set_inline_message(str(exc), tone="warning")
+            self.workspace_notebook.select(self.transcript_tab)
+            return
 
         self._set_export_state(True)
-        self._append_log(f"Exporting edited transcript to {export_path}")
+        self._append_log(f"Exporting edited transcript to {request.export_path}")
         self.editor_status_var.set("Export in progress")
         self._set_inline_message("Exporting edited transcript in the background.", tone="muted")
 
         self.active_export_worker = threading.Thread(
             target=self._run_export,
-            args=(segments, speaker_names, export_path, export_format),
+            args=(request,),
             daemon=True,
         )
         self.active_export_worker.start()
 
-    def _run_export(
-        self,
-        segments: list[TranscriptSegment],
-        speaker_names: dict[str, str],
-        export_path: Path,
-        export_format: str,
-    ) -> None:
+    def _run_export(self, request: TranscriptExportRequest) -> None:
         try:
-            export_path.parent.mkdir(parents=True, exist_ok=True)
-            current_result = self.current_result
-            if export_format == "txt":
-                if current_result is None:
-                    raise RuntimeError(
-                        "Run a job first so the transcript editor has content to export."
-                    )
-                write_text_transcript(
-                    segments,
-                    export_path,
-                    current_result.video_file,
-                    None,
-                    speaker_names,
-                )
-            else:
-                write_subtitle_file(
-                    segments,
-                    export_path,
-                    cast(SubtitleFormat, export_format),
-                    speaker_names,
-                )
+            export_path = write_edited_transcript_export(request)
             self.event_queue.put((QUEUE_EXPORT_RESULT, export_path))
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Edited transcript export failed")
             self.event_queue.put((QUEUE_EXPORT_ERROR, exc))
 
     def _reset_transcript_editor(self) -> None:
-        if self.current_result is None:
-            self._set_editor_contents("")
-            self._set_speaker_name_map([])
-            self.editor_status_var.set("Transcript editor is empty")
-            return
-        self._set_editor_contents(render_editable_transcript(self.current_result.segments))
-        self._set_speaker_name_map(self.current_result.segments)
-        self.editor_status_var.set("Transcript reset to the original generated version")
+        self._apply_editor_document(reset_editor_document(self.current_result))
         self._set_inline_message("Transcript editor reset to the generated output.", tone="muted")
 
     def _build_config(self) -> JobConfig:
-        input_mode = self._current_input_mode()
-        subtitle_format = self._current_subtitle_format()
-        return JobConfig(
-            input_mode=input_mode,
-            input_value=self._value_without_placeholder(self.input_entry, self.input_var),
-            output_dir=Path(
-                self._value_without_placeholder(self.output_entry, self.output_dir_var)
-                or default_output_dir()
-            ),
-            delay=float(self.delay_var.get()),
-            save_text=self.save_text_var.get(),
-            embed_subtitles=self.embed_subtitles_var.get(),
-            enable_diarization=self.enable_diarization_var.get(),
-            speaker_count_mode=cast(
-                Literal["auto", "exact", "range"], self.speaker_count_mode_var.get()
-            ),
-            exact_speakers=self._parse_optional_int(self.exact_speakers_var.get()),
-            min_speakers=self._parse_optional_int(self.min_speakers_var.get()),
-            max_speakers=self._parse_optional_int(self.max_speakers_var.get()),
-            audio_cleanup_preset=cast(
-                Literal["off", "light", "meeting"], self.audio_cleanup_preset_var.get()
-            ),
-            model_name=self.model_name_var.get(),
-            subtitle_format=subtitle_format,
+        return form_data_to_job_config(
+            self._form_data(),
+            default_output_dir(),
         )
 
     def _persist_settings(self) -> None:
-        settings = AppSettings(
-            input_mode=self._current_input_mode(),
-            output_dir=self._value_without_placeholder(self.output_entry, self.output_dir_var),
-            delay=self.delay_var.get(),
-            save_text=self.save_text_var.get(),
-            embed_subtitles=self.embed_subtitles_var.get(),
-            enable_diarization=self.enable_diarization_var.get(),
-            speaker_count_mode=cast(
-                Literal["auto", "exact", "range"], self.speaker_count_mode_var.get()
-            ),
-            exact_speakers=self.exact_speakers_var.get(),
-            min_speakers=self.min_speakers_var.get(),
-            max_speakers=self.max_speakers_var.get(),
-            audio_cleanup_preset=cast(
-                Literal["off", "light", "meeting"], self.audio_cleanup_preset_var.get()
-            ),
-            model_name=self.model_name_var.get(),
-            subtitle_format=self._current_subtitle_format(),
-        )
+        settings = form_data_to_settings(self._form_data())
         try:
             save_settings(settings)
         except SettingsError as exc:
@@ -656,34 +663,6 @@ class VideoTranscriberApp:
                 "Settings could not be saved. The app will keep running with your current values.",
                 tone="warning",
             )
-
-    def _parse_optional_int(self, raw_value: str) -> int | None:
-        value = raw_value.strip()
-        if not value:
-            return None
-        return int(value)
-
-    def _set_speaker_name_map(self, segments: list[TranscriptSegment]) -> None:
-        speaker_ids = sorted(
-            {segment.speaker for segment in segments if segment.speaker is not None}
-        )
-        self.speaker_names_text.delete("1.0", tk.END)
-        if speaker_ids:
-            lines = [f"{speaker_id} = {speaker_id}" for speaker_id in speaker_ids]
-            self.speaker_names_text.insert("1.0", "\n".join(lines))
-
-    def _parse_speaker_name_map(self) -> dict[str, str]:
-        mapping: dict[str, str] = {}
-        for raw_line in self.speaker_names_text.get("1.0", tk.END).splitlines():
-            line = raw_line.strip()
-            if not line or "=" not in line:
-                continue
-            speaker_id, display_name = line.split("=", maxsplit=1)
-            speaker_id = speaker_id.strip()
-            display_name = display_name.strip()
-            if speaker_id and display_name:
-                mapping[speaker_id] = display_name
-        return mapping
 
     def _append_log(self, message: str) -> None:
         self.log_text.insert(tk.END, message + "\n")
@@ -705,14 +684,18 @@ class VideoTranscriberApp:
             self.editor_text.insert("1.0", text)
         self.editor_text.edit_modified(False)
 
+    def _apply_editor_document(self, document: TranscriptEditorDocument) -> None:
+        self._set_editor_contents(document.contents)
+        self.speaker_names_text.delete("1.0", tk.END)
+        if document.speaker_names:
+            self.speaker_names_text.insert("1.0", document.speaker_names)
+        self.editor_status_var.set(document.status)
+
     def _handle_editor_modified(self, _event: tk.Event[tk.Misc]) -> None:
         if not self.editor_text.edit_modified():
             return
-        content = self.editor_text.get("1.0", tk.END).strip()
-        if not content:
-            self.editor_status_var.set("Transcript editor is empty")
-        else:
-            self.editor_status_var.set("Unsaved transcript edits")
+        content = self.editor_text.get("1.0", tk.END)
+        self.editor_status_var.set(editor_status_for_text(content))
         self.editor_text.edit_modified(False)
 
     def _current_input_mode(self) -> InputMode:
@@ -725,6 +708,24 @@ class VideoTranscriberApp:
         if value == "vtt":
             return "vtt"
         return "ass"
+
+    def _form_data(self) -> GuiFormData:
+        return GuiFormData(
+            input_mode=self._current_input_mode(),
+            input_value=self._value_without_placeholder(self.input_entry, self.input_var),
+            output_dir=self._value_without_placeholder(self.output_entry, self.output_dir_var),
+            delay=self.delay_var.get(),
+            save_text=self.save_text_var.get(),
+            embed_subtitles=self.embed_subtitles_var.get(),
+            enable_diarization=self.enable_diarization_var.get(),
+            speaker_count_mode=cast("SpeakerCountMode", self.speaker_count_mode_var.get()),
+            exact_speakers=self.exact_speakers_var.get(),
+            min_speakers=self.min_speakers_var.get(),
+            max_speakers=self.max_speakers_var.get(),
+            audio_cleanup_preset=cast("AudioCleanupPreset", self.audio_cleanup_preset_var.get()),
+            model_name=self.model_name_var.get(),
+            subtitle_format=self._current_subtitle_format(),
+        )
 
     def _on_close(self) -> None:
         self._persist_settings()
