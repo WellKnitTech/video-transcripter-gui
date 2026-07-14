@@ -1,1 +1,5 @@
+# Prefer installing from pyproject.toml:
+#   pip install -e .
+#   pip install -e .[dev]
+#   pip install -e .[speakers]
 -e .

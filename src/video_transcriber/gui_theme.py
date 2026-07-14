@@ -5,8 +5,44 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-MODEL_OPTIONS = ["tiny", "base", "small", "medium", "large"]
+MODEL_OPTIONS = ["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"]
 SUBTITLE_FORMAT_OPTIONS = ["ass", "srt", "vtt"]
+DEVICE_OPTIONS = ["auto", "cpu", "cuda"]
+LANGUAGE_OPTIONS = [
+    "auto",
+    "en",
+    "es",
+    "fr",
+    "de",
+    "pt",
+    "it",
+    "nl",
+    "pl",
+    "ru",
+    "uk",
+    "tr",
+    "ar",
+    "hi",
+    "ja",
+    "zh",
+    "ko",
+    "sv",
+    "da",
+    "fi",
+    "no",
+    "cs",
+    "ro",
+    "hu",
+    "el",
+    "he",
+    "id",
+    "ms",
+    "th",
+    "vi",
+]
+CPU_MODEL_HINT = (
+    "CPU mode works best with tiny, base, small, or distil-large-v3 and uses INT8 by default."
+)
 PLACEHOLDER_TEXT = {
     "url": "https://example.com/video",
     "file": "/path/to/video.mp4",

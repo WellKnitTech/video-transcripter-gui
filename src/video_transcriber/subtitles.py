@@ -25,6 +25,14 @@ SPEAKER_COLORS = [
     "&H000000FF",
     "&H00FF0000",
     "&H0000FFFF",
+    "&H00FF00FF",
+    "&H0000A5FF",
+    "&H0080FF80",
+    "&H00FF80C0",
+    "&H0080FFFF",
+    "&H00FFFF80",
+    "&H00C080FF",
+    "&H0080C0FF",
 ]
 
 

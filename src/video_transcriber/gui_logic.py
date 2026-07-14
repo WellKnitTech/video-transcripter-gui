@@ -5,15 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .exceptions import ValidationError
 from .models import (
     AppSettings,
     AudioCleanupPreset,
+    DeviceChoice,
     InputMode,
     JobConfig,
     SpeakerCountMode,
     SubtitleFormat,
     TranscriptSegment,
 )
+from .validation import normalize_model_name
 
 
 @dataclass(slots=True)
@@ -32,6 +35,8 @@ class GuiFormData:
     audio_cleanup_preset: AudioCleanupPreset
     model_name: str
     subtitle_format: SubtitleFormat
+    language: str
+    device: DeviceChoice
 
 
 def settings_to_form_data(settings: AppSettings, default_output_directory: Path) -> GuiFormData:
@@ -49,28 +54,44 @@ def settings_to_form_data(settings: AppSettings, default_output_directory: Path)
         min_speakers=settings.min_speakers,
         max_speakers=settings.max_speakers,
         audio_cleanup_preset=settings.audio_cleanup_preset,
-        model_name=settings.model_name,
+        model_name=normalize_model_name(settings.model_name),
         subtitle_format=settings.subtitle_format,
+        language=settings.language or "auto",
+        device=settings.device,
     )
 
 
 def form_data_to_job_config(form_data: GuiFormData, default_output_directory: Path) -> JobConfig:
     """Translate GUI form values into a job configuration."""
+    try:
+        delay = float(form_data.delay.strip() or "0")
+    except ValueError as exc:
+        raise ValidationError("Subtitle delay must be a number.") from exc
+
+    try:
+        exact_speakers = parse_optional_int(form_data.exact_speakers)
+        min_speakers = parse_optional_int(form_data.min_speakers)
+        max_speakers = parse_optional_int(form_data.max_speakers)
+    except ValueError as exc:
+        raise ValidationError("Speaker counts must be whole numbers.") from exc
+
     return JobConfig(
         input_mode=form_data.input_mode,
         input_value=form_data.input_value,
         output_dir=resolve_output_dir(form_data.output_dir, default_output_directory),
-        delay=float(form_data.delay),
+        delay=delay,
         save_text=form_data.save_text,
         embed_subtitles=form_data.embed_subtitles,
         enable_diarization=form_data.enable_diarization,
         speaker_count_mode=form_data.speaker_count_mode,
-        exact_speakers=parse_optional_int(form_data.exact_speakers),
-        min_speakers=parse_optional_int(form_data.min_speakers),
-        max_speakers=parse_optional_int(form_data.max_speakers),
+        exact_speakers=exact_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
         audio_cleanup_preset=form_data.audio_cleanup_preset,
-        model_name=form_data.model_name,
+        model_name=normalize_model_name(form_data.model_name),
         subtitle_format=form_data.subtitle_format,
+        language=form_data.language,
+        device=form_data.device,
     )
 
 
@@ -88,8 +109,10 @@ def form_data_to_settings(form_data: GuiFormData) -> AppSettings:
         min_speakers=form_data.min_speakers,
         max_speakers=form_data.max_speakers,
         audio_cleanup_preset=form_data.audio_cleanup_preset,
-        model_name=form_data.model_name,
+        model_name=normalize_model_name(form_data.model_name),
         subtitle_format=form_data.subtitle_format,
+        language=form_data.language,
+        device=form_data.device,
     )
 
 
@@ -114,10 +137,12 @@ def friendly_status(message: str) -> str:
     lowered = message.lower()
     if "download" in lowered:
         return "Downloading"
-    if "whisper model" in lowered:
+    if "whisper model" in lowered or "loading model" in lowered:
         return "Loading model"
     if "transcription" in lowered or "transcrib" in lowered:
         return "Transcribing"
+    if "speaker labeling skipped" in lowered:
+        return "Speaker labeling skipped"
     if "speaker labeling" in lowered:
         return "Speaker labeling"
     if "audio" in lowered:

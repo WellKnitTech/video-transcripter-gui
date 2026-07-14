@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from tkinter import scrolledtext, ttk
 
 from .gui_theme import (
+    DEVICE_OPTIONS,
+    LANGUAGE_OPTIONS,
     MODEL_OPTIONS,
     PALETTE,
     SUBTITLE_FORMAT_OPTIONS,
@@ -26,6 +28,9 @@ class GuiViewState:
     delay_var: tk.StringVar
     model_name_var: tk.StringVar
     subtitle_format_var: tk.StringVar
+    language_var: tk.StringVar
+    device_var: tk.StringVar
+    device_hint_var: tk.StringVar
     speaker_count_mode_var: tk.StringVar
     exact_speakers_var: tk.StringVar
     min_speakers_var: tk.StringVar
@@ -51,6 +56,7 @@ class GuiViewBindings:
     browse_input: Callable[[], None]
     browse_output_dir: Callable[[], None]
     refresh_speaker_mode_ui: Callable[[], None]
+    refresh_device_hint: Callable[[], None]
     start_processing: Callable[[], None]
     cancel_processing: Callable[[], None]
     open_output_dir: Callable[[], None]
@@ -77,6 +83,8 @@ class GuiWidgets:
     open_output_button: ttk.Button
     model_name_combo: ttk.Combobox
     subtitle_format_combo: ttk.Combobox
+    language_combo: ttk.Combobox
+    device_combo: ttk.Combobox
     speaker_mode_combo: ttk.Combobox
     audio_cleanup_combo: ttk.Combobox
     export_format_combo: ttk.Combobox
@@ -109,6 +117,8 @@ class _LeftColumnWidgets:
     open_output_button: ttk.Button
     model_name_combo: ttk.Combobox
     subtitle_format_combo: ttk.Combobox
+    language_combo: ttk.Combobox
+    device_combo: ttk.Combobox
     speaker_mode_combo: ttk.Combobox
     audio_cleanup_combo: ttk.Combobox
     inline_message_label: tk.Label
@@ -169,6 +179,8 @@ def build_ui(root: tk.Tk, state: GuiViewState, bindings: GuiViewBindings) -> Gui
         open_output_button=left_widgets.open_output_button,
         model_name_combo=left_widgets.model_name_combo,
         subtitle_format_combo=left_widgets.subtitle_format_combo,
+        language_combo=left_widgets.language_combo,
+        device_combo=left_widgets.device_combo,
         speaker_mode_combo=left_widgets.speaker_mode_combo,
         audio_cleanup_combo=left_widgets.audio_cleanup_combo,
         export_format_combo=right_widgets.export_format_combo,
@@ -373,27 +385,55 @@ def _build_left_column(
     )
     subtitle_format_combo.grid(row=11, column=1, sticky="ew", pady=(6, 0))
 
-    ttk.Label(card, text="Subtitle delay (seconds)", style="Field.TLabel").grid(
+    ttk.Label(card, text="Language", style="Field.TLabel").grid(
         row=12, column=0, sticky="w", pady=(12, 0)
     )
-    ttk.Label(card, text="Speaker count", style="Field.TLabel").grid(
+    ttk.Label(card, text="Device", style="Field.TLabel").grid(
         row=12, column=1, sticky="w", pady=(12, 0)
     )
+    language_combo = ttk.Combobox(
+        card,
+        textvariable=state.language_var,
+        values=LANGUAGE_OPTIONS,
+        state="readonly",
+    )
+    language_combo.grid(row=13, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
+    device_combo = ttk.Combobox(
+        card,
+        textvariable=state.device_var,
+        values=DEVICE_OPTIONS,
+        state="readonly",
+    )
+    device_combo.grid(row=13, column=1, sticky="ew", pady=(6, 0))
+    device_combo.bind("<<ComboboxSelected>>", lambda _event: bindings.refresh_device_hint())
+    ttk.Label(
+        card,
+        textvariable=state.device_hint_var,
+        style="Muted.TLabel",
+        wraplength=360,
+    ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    ttk.Label(card, text="Subtitle delay (seconds)", style="Field.TLabel").grid(
+        row=15, column=0, sticky="w", pady=(12, 0)
+    )
+    ttk.Label(card, text="Speaker count", style="Field.TLabel").grid(
+        row=15, column=1, sticky="w", pady=(12, 0)
+    )
     delay_entry = ttk.Entry(card, textvariable=state.delay_var)
-    delay_entry.grid(row=13, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
+    delay_entry.grid(row=16, column=0, sticky="ew", pady=(6, 0), padx=(0, 8))
     speaker_mode_combo = ttk.Combobox(
         card,
         textvariable=state.speaker_count_mode_var,
         values=["auto", "exact", "range"],
         state="readonly",
     )
-    speaker_mode_combo.grid(row=13, column=1, sticky="ew", pady=(6, 0))
+    speaker_mode_combo.grid(row=16, column=1, sticky="ew", pady=(6, 0))
     speaker_mode_combo.bind(
         "<<ComboboxSelected>>", lambda _event: bindings.refresh_speaker_mode_ui()
     )
 
     toggle_box = ttk.Frame(card, style="Card.TFrame")
-    toggle_box.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+    toggle_box.grid(row=17, column=0, columnspan=2, sticky="ew", pady=(16, 0))
     toggle_box.columnconfigure(1, weight=1)
     toggle_box.columnconfigure(3, weight=1)
     ttk.Checkbutton(
@@ -450,10 +490,10 @@ def _build_left_column(
         wraplength=360,
         anchor="w",
     )
-    inline_message_label.grid(row=15, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+    inline_message_label.grid(row=18, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
     action_frame = ttk.Frame(card, style="Card.TFrame")
-    action_frame.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+    action_frame.grid(row=19, column=0, columnspan=2, sticky="ew", pady=(18, 0))
     process_button = ttk.Button(
         action_frame,
         text="Start Transcription  [Ctrl+Enter]",
@@ -492,6 +532,8 @@ def _build_left_column(
         open_output_button=open_output_button,
         model_name_combo=model_name_combo,
         subtitle_format_combo=subtitle_format_combo,
+        language_combo=language_combo,
+        device_combo=device_combo,
         speaker_mode_combo=speaker_mode_combo,
         audio_cleanup_combo=audio_cleanup_combo,
         inline_message_label=inline_message_label,

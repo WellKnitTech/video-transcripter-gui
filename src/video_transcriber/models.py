@@ -11,6 +11,7 @@ InputMode = Literal["url", "file"]
 SubtitleFormat = Literal["ass", "srt", "vtt"]
 SpeakerCountMode = Literal["auto", "exact", "range"]
 AudioCleanupPreset = Literal["off", "light", "meeting"]
+DeviceChoice = Literal["auto", "cpu", "cuda"]
 
 
 @dataclass(slots=True)
@@ -29,6 +30,15 @@ class JobConfig:
     audio_cleanup_preset: AudioCleanupPreset = "light"
     model_name: str = "base"
     subtitle_format: SubtitleFormat = "ass"
+    language: str = "auto"
+    device: DeviceChoice = "auto"
+
+
+@dataclass(slots=True)
+class TranscriptionOptions:
+    model_name: str = "base"
+    language: str = "auto"
+    device: DeviceChoice = "auto"
 
 
 @dataclass(slots=True)
@@ -70,6 +80,8 @@ class AppSettings:
     audio_cleanup_preset: AudioCleanupPreset = "light"
     model_name: str = "base"
     subtitle_format: SubtitleFormat = "ass"
+    language: str = "auto"
+    device: DeviceChoice = "auto"
 
 
 @dataclass(slots=True)

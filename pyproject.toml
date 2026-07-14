@@ -12,12 +12,13 @@ license = { text = "Unlicense" }
 authors = [{ name = "Video Transcriber GUI contributors" }]
 dependencies = [
   "ffmpeg-python>=0.2.0,<1.0.0",
-  "openai-whisper>=20231117",
+  "faster-whisper>=1.1.0",
   "yt-dlp>=2024.8.6",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "bandit[toml]>=1.7.9",
   "build>=1.2.2",
   "pytest>=8.3.3",
   "ruff>=0.7.0",

@@ -27,7 +27,7 @@ from .gui_logic import (
     friendly_status,
     settings_to_form_data,
 )
-from .gui_theme import PALETTE, PLACEHOLDER_TEXT
+from .gui_theme import CPU_MODEL_HINT, PALETTE, PLACEHOLDER_TEXT
 from .gui_theme import configure_styles as configure_gui_styles
 from .gui_transcript_editor import (
     TranscriptEditorDocument,
@@ -44,6 +44,7 @@ from .models import (
     AppSettings,
     AudioCleanupPreset,
     CancellationToken,
+    DeviceChoice,
     InputMode,
     JobConfig,
     JobResult,
@@ -51,8 +52,9 @@ from .models import (
     SubtitleFormat,
 )
 from .pipeline import ProcessingService
+from .progress import clamp_monotonic
 from .utils import default_output_dir, load_settings, open_directory, save_settings
-from .validation import validate_job_config
+from .validation import existing_output_conflicts, validate_job_config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +92,8 @@ class VideoTranscriberApp:
         self.open_output_button: ttk.Button
         self.model_name_combo: ttk.Combobox
         self.subtitle_format_combo: ttk.Combobox
+        self.language_combo: ttk.Combobox
+        self.device_combo: ttk.Combobox
         self.speaker_mode_combo: ttk.Combobox
         self.audio_cleanup_combo: ttk.Combobox
         self.export_format_combo: ttk.Combobox
@@ -134,6 +138,9 @@ class VideoTranscriberApp:
             delay_var=self.delay_var,
             model_name_var=self.model_name_var,
             subtitle_format_var=self.subtitle_format_var,
+            language_var=self.language_var,
+            device_var=self.device_var,
+            device_hint_var=self.device_hint_var,
             speaker_count_mode_var=self.speaker_count_mode_var,
             exact_speakers_var=self.exact_speakers_var,
             min_speakers_var=self.min_speakers_var,
@@ -157,6 +164,7 @@ class VideoTranscriberApp:
             browse_input=self._browse_input,
             browse_output_dir=self._browse_output_dir,
             refresh_speaker_mode_ui=self._refresh_speaker_mode_ui,
+            refresh_device_hint=self._refresh_device_hint,
             start_processing=self._start_processing,
             cancel_processing=self._cancel_processing,
             open_output_dir=self._open_output_dir,
@@ -180,6 +188,8 @@ class VideoTranscriberApp:
         self.open_output_button = widgets.open_output_button
         self.model_name_combo = widgets.model_name_combo
         self.subtitle_format_combo = widgets.subtitle_format_combo
+        self.language_combo = widgets.language_combo
+        self.device_combo = widgets.device_combo
         self.speaker_mode_combo = widgets.speaker_mode_combo
         self.audio_cleanup_combo = widgets.audio_cleanup_combo
         self.export_format_combo = widgets.export_format_combo
@@ -222,6 +232,9 @@ class VideoTranscriberApp:
         self.delay_var = tk.StringVar(value="0.0")
         self.model_name_var = tk.StringVar(value="base")
         self.subtitle_format_var = tk.StringVar(value="ass")
+        self.language_var = tk.StringVar(value="auto")
+        self.device_var = tk.StringVar(value="auto")
+        self.device_hint_var = tk.StringVar(value="")
         self.speaker_count_mode_var = tk.StringVar(value="auto")
         self.exact_speakers_var = tk.StringVar(value="")
         self.min_speakers_var = tk.StringVar(value="")
@@ -243,6 +256,7 @@ class VideoTranscriberApp:
             )
         )
         self.editor_status_var = tk.StringVar(value="Transcript editor is empty")
+        self._job_progress: float | None = None
 
     def _apply_settings(self, settings: AppSettings) -> None:
         form_data = settings_to_form_data(settings, default_output_dir())
@@ -259,8 +273,20 @@ class VideoTranscriberApp:
         self.audio_cleanup_preset_var.set(form_data.audio_cleanup_preset)
         self.model_name_var.set(form_data.model_name)
         self.subtitle_format_var.set(form_data.subtitle_format)
+        self.language_var.set(form_data.language)
+        self.device_var.set(form_data.device)
         self._refresh_speaker_mode_ui()
+        self._refresh_device_hint()
         self._refresh_placeholders()
+
+    def _refresh_device_hint(self) -> None:
+        if self.device_var.get() == "cpu":
+            self.device_hint_var.set(CPU_MODEL_HINT)
+        else:
+            self.device_hint_var.set(
+                "Auto uses CUDA when available, otherwise CPU with INT8. "
+                "Language auto-detect works well; set a code for better accuracy."
+            )
 
     def _browse_input(self) -> None:
         if self._current_input_mode() != "file":
@@ -329,9 +355,27 @@ class VideoTranscriberApp:
             self.status_var.set("Please fix the highlighted details")
             return
 
+        video_stem = self._preview_video_stem(config)
+        conflicts = existing_output_conflicts(config, video_stem)
+        if conflicts:
+            names = ", ".join(path.name for path in conflicts[:4])
+            extra = "" if len(conflicts) <= 4 else f" (+{len(conflicts) - 4} more)"
+            proceed = messagebox.askyesno(
+                "Overwrite existing files?",
+                f"These output files already exist and will be overwritten:\n\n{names}{extra}\n\n"
+                "Continue?",
+            )
+            if not proceed:
+                self._set_inline_message(
+                    "Start cancelled to protect existing outputs.",
+                    tone="warning",
+                )
+                return
+
         self._persist_settings()
         self.current_result = None
         self.cancellation_token = CancellationToken()
+        self._job_progress = None
         self._set_running_state(True)
         self._set_inline_message(
             "Job started. You can follow progress from the overview and logs.",
@@ -387,8 +431,14 @@ class VideoTranscriberApp:
         self.status_var.set(self._friendly_status(message))
         self.progress_caption_var.set(message)
         self._append_log(message)
-        if progress is not None:
-            self.progress_bar["value"] = progress
+        self._job_progress = clamp_monotonic(self._job_progress, progress)
+        if self._job_progress is not None:
+            self.progress_bar["value"] = self._job_progress
+
+    def _preview_video_stem(self, config: JobConfig) -> str:
+        if config.input_mode == "file":
+            return Path(config.input_value).expanduser().stem
+        return "downloaded_video"
 
     def _handle_result_event(self, payload: JobResult) -> None:
         self.active_worker = None
@@ -475,6 +525,8 @@ class VideoTranscriberApp:
         for widget in [
             self.model_name_combo,
             self.subtitle_format_combo,
+            self.language_combo,
+            self.device_combo,
             self.speaker_mode_combo,
             self.audio_cleanup_combo,
         ]:
@@ -725,6 +777,8 @@ class VideoTranscriberApp:
             audio_cleanup_preset=cast("AudioCleanupPreset", self.audio_cleanup_preset_var.get()),
             model_name=self.model_name_var.get(),
             subtitle_format=self._current_subtitle_format(),
+            language=self.language_var.get() or "auto",
+            device=cast("DeviceChoice", self.device_var.get() or "auto"),
         )
 
     def _on_close(self) -> None:

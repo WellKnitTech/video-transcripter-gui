@@ -79,3 +79,60 @@ def test_validate_job_config_creates_output_directory(tmp_path: Path) -> None:
     config = JobConfig(input_mode="file", input_value=str(video_file), output_dir=output_dir)
     validated = validate_job_config(config)
     assert validated.output_dir.exists()
+
+
+def test_validate_job_config_normalizes_large_model(tmp_path: Path) -> None:
+    video_file = tmp_path / "video.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        model_name="large",
+    )
+    validated = validate_job_config(config)
+    assert validated.model_name == "large-v3"
+
+
+def test_validate_job_config_rejects_invalid_language(tmp_path: Path) -> None:
+    video_file = tmp_path / "video.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        language="xx",
+    )
+    with pytest.raises(ValidationError):
+        validate_job_config(config)
+
+
+def test_validate_job_config_rejects_invalid_device(tmp_path: Path) -> None:
+    video_file = tmp_path / "video.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        device="auto",
+    )
+    config.device = "mps"  # type: ignore[assignment]
+    with pytest.raises(ValidationError):
+        validate_job_config(config)
+
+
+def test_existing_output_conflicts_detects_subtitle(tmp_path: Path) -> None:
+    from video_transcriber.validation import existing_output_conflicts
+
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_text("x", encoding="utf-8")
+    subtitle = tmp_path / "clip.ass"
+    subtitle.write_text("x", encoding="utf-8")
+    config = JobConfig(
+        input_mode="file",
+        input_value=str(video_file),
+        output_dir=tmp_path,
+        embed_subtitles=False,
+    )
+    conflicts = existing_output_conflicts(config, "clip")
+    assert subtitle in conflicts

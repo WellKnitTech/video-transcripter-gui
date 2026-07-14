@@ -38,6 +38,8 @@ def test_form_data_to_job_config_preserves_values_and_parses_numbers() -> None:
         audio_cleanup_preset="meeting",
         model_name="small",
         subtitle_format="srt",
+        language="en",
+        device="cpu",
     )
 
     config = form_data_to_job_config(form_data, Path("/fallback"))
@@ -51,6 +53,8 @@ def test_form_data_to_job_config_preserves_values_and_parses_numbers() -> None:
     assert config.max_speakers == 4
     assert config.exact_speakers is None
     assert config.subtitle_format == "srt"
+    assert config.language == "en"
+    assert config.device == "cpu"
 
 
 def test_form_data_to_settings_keeps_empty_output_dir() -> None:
@@ -69,12 +73,26 @@ def test_form_data_to_settings_keeps_empty_output_dir() -> None:
         audio_cleanup_preset="light",
         model_name="base",
         subtitle_format="ass",
+        language="auto",
+        device="auto",
     )
 
     settings = form_data_to_settings(form_data)
 
     assert settings.output_dir == ""
     assert settings.input_mode == "url"
+    assert settings.language == "auto"
+    assert settings.device == "auto"
+
+
+def test_settings_to_form_data_normalizes_legacy_large_model() -> None:
+    form_data = settings_to_form_data(
+        AppSettings(model_name="large", language="fr", device="cuda"),
+        Path("/tmp/downloads"),
+    )
+    assert form_data.model_name == "large-v3"
+    assert form_data.language == "fr"
+    assert form_data.device == "cuda"
 
 
 def test_build_export_path_uses_default_directory_and_suffix() -> None:

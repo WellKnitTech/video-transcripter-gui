@@ -16,12 +16,19 @@
 
 ## Repository Layout
 
-- `src/video_transcriber/gui.py` - Tkinter app, widgets, event loop, dialogs
+- `src/video_transcriber/gui.py` - Tkinter app orchestration, dialogs, workers
+- `src/video_transcriber/gui_views.py` - Passive Tkinter view builders
+- `src/video_transcriber/gui_theme.py` - Theme, palette, and option lists
+- `src/video_transcriber/gui_logic.py` - Form/settings/job config translation
+- `src/video_transcriber/gui_events.py` - Worker queue polling helpers
+- `src/video_transcriber/gui_transcript_editor.py` - Transcript editor/export helpers
 - `src/video_transcriber/main.py` - app entry point
 - `src/video_transcriber/pipeline.py` - processing orchestration and progress events
-- `src/video_transcriber/transcription.py` - Whisper integration
+- `src/video_transcriber/transcription.py` - faster-whisper integration (killable child process)
+- `src/video_transcriber/progress.py` - overall job progress banding
 - `src/video_transcriber/download.py` - `yt-dlp` download integration
-- `src/video_transcriber/diarization.py` - optional speaker labeling
+- `src/video_transcriber/diarization.py` - optional heuristic speaker labeling
+- `src/video_transcriber/audio_preprocess.py` - audio extract/cleanup for speakers
 - `src/video_transcriber/subtitles.py` - subtitle/text writers
 - `src/video_transcriber/validation.py` - input validation and normalization
 - `src/video_transcriber/utils.py` - pure helpers and settings persistence
@@ -35,7 +42,7 @@
 - Activate it: `. .venv/bin/activate`
 - Install app deps: `pip install -e .`
 - Install dev tools: `pip install -e .[dev]`
-- Optional speaker-labeling extras: `pip install -e .[speakers]`
+- Optional speaker-labeling extras: `pip install -e .[speakers]` or `make install-speakers`
 - Run GUI directly: `python video_transcriber_gui.py`
 - Run installed entry point: `video-transcriber-gui`
 
@@ -43,6 +50,7 @@
 
 - Install package: `make install`
 - Install dev deps: `make install-dev`
+- Install speakers extras: `make install-speakers` (`install-diarization` is a deprecated alias)
 - Start app: `make run`
 - Run tests: `make test` or `pytest`
 - Run lint: `make lint` or `ruff check .`
@@ -76,13 +84,15 @@
 ## Important Repo Gotchas
 
 - Keep optional dependencies lazily imported inside runtime code paths.
-- Avoid importing `whisper`, `yt_dlp`, `ffmpeg`, or speaker-labeling dependencies at module import time unless already required by the file's current design.
+- Avoid importing `faster_whisper`, `yt_dlp`, `ffmpeg`, or speaker-labeling dependencies at module import time unless already required by the file's current design.
+- Transcription runs in a spawn multiprocessing child so Cancel can terminate the worker; unit tests should prefer `_transcribe_in_process` with stubbed models.
 - Tests should not require network access, model downloads, GUI display access, or real ffmpeg execution.
 - Prefer stubbing collaborators in `pipeline.py` tests instead of invoking full media processing.
 - `validate_job_config()` creates the output directory; be aware of filesystem side effects.
 - Settings persist to `~/.video_transcriber_gui.json`; tests should monkeypatch `SETTINGS_PATH` or related helpers.
 - `default_output_dir()` may point to the real `~/Downloads`; avoid touching user directories in tests.
-- The Makefile target `install-diarization` currently references `.[diarization]`, but the actual extra in `pyproject.toml` is `.[speakers]`.
+- Legacy settings model name `"large"` is normalized to `"large-v3"`.
+- The Makefile target `install-diarization` is a deprecated alias for `install-speakers` (`.[speakers]`).
 
 ## Cursor And Copilot Rules
 

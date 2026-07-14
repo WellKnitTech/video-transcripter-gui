@@ -1,4 +1,4 @@
-.PHONY: install install-dev install-diarization run test lint check
+.PHONY: install install-dev install-speakers install-diarization run test lint check
 
 install:
 	pip install -e .
@@ -6,8 +6,11 @@ install:
 install-dev:
 	pip install -e .[dev]
 
-install-diarization:
-	pip install -e .[diarization]
+install-speakers:
+	pip install -e .[speakers]
+
+# Deprecated alias; prefer `make install-speakers`.
+install-diarization: install-speakers
 
 run:
 	python video_transcriber_gui.py
